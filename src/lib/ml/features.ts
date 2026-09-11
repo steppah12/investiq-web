@@ -163,3 +163,36 @@ export function applyNormalization(
 export function featureRowToVector(row: FeatureRow): number[] {
   return FEAT_KEYS.map(key => row[key] ?? 0);
 }
+
+// Auto-calibrate deadband to target ~30% FLAT labels
+// Prevents the 65%-FLAT collapse on low-volatility or short datasets
+export function calibrateDeadband(
+  rows: StockRow[],
+  horizon: number,
+  targetFlatPct: number = 0.30
+): number {
+  const DEFAULT = { 30: 2.0, 60: 3.5, 90: 5.0 } as Record<number, number>;
+
+  if (!rows || rows.length < horizon + 30) {
+    return DEFAULT[horizon] ?? 2.0;
+  }
+
+  // Collect absolute returns for this horizon
+  const returns: number[] = [];
+  for (let i = 50; i < rows.length - horizon; i++) {
+    if ((rows[i] as any)?._boundary || (rows[i + horizon] as any)?._boundary) continue;
+    const ret = (rows[i + horizon].close - rows[i].close) / rows[i].close * 100;
+    if (isFinite(ret)) returns.push(Math.abs(ret));
+  }
+
+  if (returns.length < 20) return DEFAULT[horizon] ?? 2.0;
+
+  returns.sort((a, b) => a - b);
+
+  // Band = targetFlatPct-th percentile of |returns|
+  const idx = Math.floor(targetFlatPct * returns.length);
+  const band = returns[Math.min(idx, returns.length - 1)];
+
+  // Floor 0.5% — let auto-calibration work on short datasets
+  return Math.max(0.5, Math.min(band, 15.0));
+}
