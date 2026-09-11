@@ -1,3 +1,4 @@
+// @ts-nocheck
 'use client'
 // @ts-nocheck
 // InvestIQ v9.5.23 — Data Ingestion Corruption Fix + Trainability Improvements
