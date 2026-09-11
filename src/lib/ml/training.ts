@@ -276,7 +276,7 @@ export async function runBacktest(
 
   for (let i = 50; i < normalized.length - modelWeights.horizon; i++) {
     // Simulate model prediction (in real implementation, use saved model weights)
-    const mockPrediction = Math.random() > 0.5 ? 'UP' : 'DOWN';
+    const mockPrediction: string = Math.random() > 0.5 ? 'UP' : 'DOWN';
     const confidence = 0.6 + Math.random() * 0.3;
 
     // Calculate actual return
