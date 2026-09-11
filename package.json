@@ -1,0 +1,39 @@
+{
+  "name": "investiq-web",
+  "version": "9.5.31",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit",
+    "setup-db": "node scripts/setup-db.js",
+    "test": "node tests/integration.test.js",
+    "test-pipeline": "npm run type-check && npm run test",
+    "validate": "node validate-deployment.js",
+    "pre-deploy": "npm run validate && npm run test-pipeline",
+    "postinstall": "node scripts/setup-db.js"
+  },
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@supabase/supabase-js": "^2.38.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.0.0",
+    "tailwindcss": "^3.3.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "axios": "^1.5.0",
+    "cheerio": "^1.0.0-rc.12",
+    "node-cron": "^3.0.0",
+    "dotenv": "^16.3.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "eslint-config-next": "^14.0.0"
+  }
+}
