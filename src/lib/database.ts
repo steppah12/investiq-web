@@ -2,18 +2,22 @@
 import { supabase } from './supabase/client'
 import type { 
   StockData, 
-  StockRow, 
-  ModelWeights, 
-  TrainingResult, 
   PortfolioEntry, 
-  AuditLogEntry, 
-  MacroData 
 } from '@/types'
 
-const MAX_STORAGE_BYTES = 50_000_000; // 50MB limit for Supabase
+const MAX_STORAGE_BYTES = 50_000_000
+
+// Check if Supabase is available
+function isSupabaseAvailable(): boolean {
+  return supabase !== null && supabase !== undefined
+}
 
 export const db = {
   async save(key: string, value: any): Promise<boolean> {
+    if (!isSupabaseAvailable()) {
+      console.warn('Supabase not available, save skipped:', key)
+      return false
+    }
     try {
       const serialized = JSON.stringify(value);
       if (serialized.length > MAX_STORAGE_BYTES) {
@@ -100,6 +104,10 @@ export const db = {
   },
 
   async load(key: string, fallback: any = null): Promise<any> {
+    if (!isSupabaseAvailable()) {
+      console.warn('Supabase not available, load skipped:', key)
+      return fallback
+    }
     try {
       if (key.startsWith('iq_stock_')) {
         const stockName = key.replace('iq_stock_', '');
@@ -189,6 +197,7 @@ export const db = {
   },
 
   async remove(key: string): Promise<void> {
+    if (!isSupabaseAvailable()) return
     try {
       if (key.startsWith('iq_stock_')) {
         const stockName = key.replace('iq_stock_', '');
@@ -210,6 +219,7 @@ export const db = {
   },
 
   async keys(prefix: string = ""): Promise<string[]> {
+    if (!isSupabaseAvailable()) return []
     try {
       if (prefix === 'iq_stock_') {
         const { data, error } = await supabase
