@@ -1,2 +1,8 @@
 'use client'
-export { default } from './InvestIQApp'
+import dynamic from 'next/dynamic'
+
+const InvestIQApp = dynamic(() => import('./InvestIQApp'), { ssr: false })
+
+export default function Page() {
+  return <InvestIQApp />
+}
