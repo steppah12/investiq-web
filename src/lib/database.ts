@@ -226,7 +226,7 @@ export const db = {
           .select('stock_name');
         
         if (error || !data) return [];
-        const uniqueStocks = [...new Set(data.map(row => row.stock_name))];
+        const uniqueStocks = Array.from(new Set(data.map((row: any) => row.stock_name)));
         return uniqueStocks.map(name => `iq_weights_${name}`);
       }
 
