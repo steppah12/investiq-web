@@ -519,6 +519,7 @@
 // P11 resolveTickerToExpertName() fuzzy matching + NSE_TICKER_MAP aliases
 // P12 Per-stock pipeline order enforced in both parseCSV + splitBulkByStock
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { mirrorSaveToSupabase, mirrorRemoveFromSupabase } from "@/lib/localSync";
 
 const VERSION = "9.5.31";
 const TAX_RATE = 0.15;
@@ -576,25 +577,29 @@ function calibrateDeadband(rows, horizon, targetFlatPct=0.30) {
 // 4. Admin users: full read/write. Viewer users: read-only (db.save blocked by hasAdminRole()).
 // 5. Training should run server-side (Edge Function) for large datasets — the current
 //    in-browser LogReg/LinReg can stay as a preview mode for <500 rows.
+// BACKEND: migrated. localStorage stays as the fast, synchronous read/write
+// path (so nothing else in this file has to change), and every save/remove
+// also fires a background write to Supabase via localSync.ts — see
+// hydrateLocalStorageFromSupabase() in page.tsx for the read side (pulls
+// Supabase -> localStorage before this app mounts).
 const db = {
   save(k, v) {
-    // BACKEND: replace with await supabase.from('kv').upsert({key:k, value:JSON.stringify(v)})
     try {
       const s = JSON.stringify(v);
       if (s.length > MAX_STORAGE_BYTES) { console.warn(`db.save: ${k} too large`); return false; }
-      localStorage.setItem(k, s); return true;
+      localStorage.setItem(k, s);
+      mirrorSaveToSupabase(k, v);
+      return true;
     } catch (e) { console.warn("db.save failed", k, e); return false; }
   },
   load(k, fb = null) {
-    // BACKEND: replace with (await supabase.from('kv').select('value').eq('key',k).single())?.data?.value
     try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; }
   },
   remove(k) {
-    // BACKEND: replace with await supabase.from('kv').delete().eq('key',k)
     try { localStorage.removeItem(k); } catch {}
+    mirrorRemoveFromSupabase(k);
   },
   keys(prefix = "") {
-    // BACKEND: replace with (await supabase.from('kv').select('key').like('key',prefix+'%')).data.map(r=>r.key)
     const out = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
