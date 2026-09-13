@@ -2,6 +2,7 @@
 import { supabaseAdmin } from '@/lib/supabase/client'
 import { db } from '@/lib/database'
 import { scrapeMyStocksQuote } from '@/lib/scraper/mystocks'
+import { runLiveLabCatchup } from '@/lib/liveLab/pipeline'
 
 // Maps InvestIQ's internal stock name (used as the iq_stock_<name> key,
 // must match STOCK_KEY() in InvestIQApp.tsx) to the ticker symbol
@@ -26,9 +27,46 @@ export const TRACKED_STOCKS: Record<string, string> = {
 export type SyncStatus =
   | 'updated' // new EOD close appended to the training dataset
   | 'no_new_data' // scraped OK, but it's the same trading day already stored
+  | 'stale_echo' // site returned today's date but identical O/H/L/V to the last stored row — not a real new trading day
   | 'market_not_closed' // scraped OK, but price isn't a final EOD close yet — not written to training data
   | 'weekend_skip' // NSE doesn't trade Sat/Sun — no network call made
   | 'error'
+
+// Fixed-date Kenyan public holidays (same calendar date every year — NSE is
+// closed). Deliberately excludes moving holidays (Good Friday, Easter
+// Monday, Eid al-Fitr, Eid al-Adha) since their dates change yearly and are
+// gazetted late — guessing them wrong would be worse than not listing them.
+// This list is informational only (shown in logs); the actual gate against
+// bad data is isStaleEcho() below, which catches ANY non-trading day —
+// listed here or not — with no yearly maintenance required.
+const FIXED_HOLIDAY_MMDD = new Set([
+  '01-01', // New Year's Day
+  '05-01', // Labour Day
+  '06-01', // Madaraka Day
+  '10-20', // Mashujaa Day
+  '12-12', // Jamhuri Day
+  '12-25', // Christmas Day
+  '12-26', // Boxing Day
+])
+
+function isLikelyFixedHoliday(dateStr: string): boolean {
+  return FIXED_HOLIDAY_MMDD.has(dateStr.slice(5)) // "YYYY-MM-DD" -> "MM-DD"
+}
+
+// Detects "today's date, yesterday's numbers" — the site relabeling a stale
+// snapshot rather than posting a genuine new close (typical on unlisted
+// holidays, or if myStocks itself lags). A real trading day, even a flat
+// one, still has real volume; an exact match across close+high+low+volume
+// all at once against the last stored row is the tell.
+function isStaleEcho(newRow: { close: number; high: number; low: number; volume: number }, lastRow: any): boolean {
+  if (!lastRow) return false
+  return (
+    newRow.close === lastRow.close &&
+    newRow.high === lastRow.high &&
+    newRow.low === lastRow.low &&
+    newRow.volume === lastRow.volume
+  )
+}
 
 function isNairobiWeekend(): boolean {
   // NSE trading days are Mon–Fri. Africa/Nairobi is UTC+3 with no DST.
@@ -93,8 +131,12 @@ export async function fetchAndStoreStock(
   }
 
   const key = `iq_stock_${stockName.replace(/\s+/g, '_')}`
-  const existing = await db.load(key, { name: stockName, rows: [] })
-  const rows = Array.isArray(existing?.rows) ? [...existing.rows] : []
+  // CRITICAL: the real app (saveStockData/loadStockData in InvestIQApp.tsx)
+  // stores this key as a PLAIN ARRAY of rows, not an object wrapper. Loading
+  // it any other way would silently look empty and overwrite the entire
+  // history with just today's row.
+  const rows = await db.load(key, [])
+  const lastRow = Array.isArray(rows) && rows.length > 0 ? rows[rows.length - 1] : null
 
   const newRow = {
     date: quote.date,
@@ -108,6 +150,23 @@ export async function fetchAndStoreStock(
   const idx = rows.findIndex((r: any) => r.date === newRow.date)
   const alreadyHadThisDate = idx >= 0
 
+  // Genuinely new date per the site's own label, but the numbers are a
+  // byte-for-byte repeat of last time — treat as a stale echo, not a real
+  // trading day. Archived above already; just don't pollute the dataset.
+  if (!alreadyHadThisDate && isStaleEcho(newRow, lastRow)) {
+    await logFetch(ticker, newRow.date, 'STALE_ECHO', {
+      price_data: newRow,
+      likely_holiday: isLikelyFixedHoliday(newRow.date),
+    })
+    return {
+      status: 'stale_echo',
+      stockName,
+      ticker,
+      date: newRow.date,
+      likelyHoliday: isLikelyFixedHoliday(newRow.date),
+    }
+  }
+
   if (alreadyHadThisDate) {
     rows[idx] = newRow // re-running same day overwrites, doesn't duplicate
   } else {
@@ -115,11 +174,7 @@ export async function fetchAndStoreStock(
   }
   rows.sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)))
 
-  await db.save(key, {
-    name: stockName,
-    rows,
-    _lastUpdated: new Date().toISOString(),
-  })
+  await db.save(key, rows) // plain array — matches saveStockData's format exactly
 
   await logFetch(ticker, newRow.date, alreadyHadThisDate ? 'NO_NEW_DATA' : 'SUCCESS', {
     price_data: newRow,
@@ -162,5 +217,22 @@ export async function fetchAndStoreAllTrackedStocks() {
     // Be polite to myStocks' servers — don't hammer them.
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }
-  return results
+
+  // Only run the (expensive) retrain/predict pipeline if at least one stock
+  // actually got a new close today — no point retraining on unchanged data.
+  const anyNewData = results.some((r) => r.status === 'updated')
+  if (anyNewData) {
+    try {
+      const catchupResults = await runLiveLabCatchup()
+      return { priceResults: results, liveLabResults: catchupResults }
+    } catch (error) {
+      console.error('Live Lab catch-up pipeline failed:', error)
+      return {
+        priceResults: results,
+        liveLabError: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  return { priceResults: results, liveLabResults: [] }
 }

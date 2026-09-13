@@ -26,9 +26,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, result })
     }
 
-    // No params — fetch everything InvestIQ tracks
-    const results = await fetchAndStoreAllTrackedStocks()
-    return NextResponse.json({ success: true, results, timestamp: new Date().toISOString() })
+    // No params — fetch everything InvestIQ tracks (+ runs Live Lab catch-up if new data landed)
+    const result = await fetchAndStoreAllTrackedStocks()
+    return NextResponse.json({ success: true, ...result, timestamp: new Date().toISOString() })
   } catch (error) {
     console.error('NSE fetch error:', error)
     return NextResponse.json({ error: 'Failed to fetch NSE data' }, { status: 500 })

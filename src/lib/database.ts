@@ -106,12 +106,12 @@ export async function listStocks(): Promise<string[]> {
   return stockKeys.map((k) => k.replace('iq_stock_', ''))
 }
 
-export async function loadStockData(name: string): Promise<StockData | null> {
-  return await db.load(`iq_stock_${name}`)
+export async function loadStockData(name: string): Promise<StockData[] | null> {
+  return await db.load(`iq_stock_${name}`, null)
 }
 
-export async function saveStockData(name: string, stockData: StockData): Promise<boolean> {
-  return await db.save(`iq_stock_${name}`, stockData)
+export async function saveStockData(name: string, rows: StockData[]): Promise<boolean> {
+  return await db.save(`iq_stock_${name}`, rows)
 }
 
 export async function deleteStock(name: string): Promise<void> {

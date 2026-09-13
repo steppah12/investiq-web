@@ -20,25 +20,30 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const results = await fetchAndStoreAllTrackedStocks()
+    const { priceResults, liveLabResults, liveLabError } = await fetchAndStoreAllTrackedStocks()
 
-    const successCount = results.filter((r) => r.status === 'updated').length
-    const errorCount = results.filter((r) => r.status === 'error').length
+    const successCount = priceResults.filter((r) => r.status === 'updated').length
+    const errorCount = priceResults.filter((r) => r.status === 'error').length
+    const liveLabCycles = (liveLabResults || []).reduce((sum, r) => sum + (r.cyclesRun?.length || 0), 0)
 
-    console.log(`Daily update completed: ${successCount} updated, ${errorCount} errors`)
+    console.log(
+      `Daily update completed: ${successCount} price updates, ${errorCount} errors, ${liveLabCycles} Live Lab cycles run`
+    )
 
     if (supabaseAdmin) {
       await supabaseAdmin.from('audit_log').insert({
         event: 'DAILY_UPDATE',
-        status: errorCount > 0 ? 'PARTIAL_SUCCESS' : 'SUCCESS',
-        detail: `${successCount} updated, ${errorCount} errors`,
+        status: errorCount > 0 || liveLabError ? 'PARTIAL_SUCCESS' : 'SUCCESS',
+        detail: `${successCount} price updates, ${errorCount} errors, ${liveLabCycles} Live Lab cycles${liveLabError ? ` — Live Lab error: ${liveLabError}` : ''}`,
       })
     }
 
     return NextResponse.json({
       success: true,
-      summary: { total: results.length, updated: successCount, errors: errorCount },
-      results,
+      summary: { total: priceResults.length, updated: successCount, errors: errorCount, liveLabCycles },
+      priceResults,
+      liveLabResults,
+      liveLabError,
     })
   } catch (error) {
     console.error('Daily update failed:', error)
