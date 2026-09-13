@@ -7949,6 +7949,7 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
 
   // ── Retrain handler ────────────────────────────────────────────────────────
   const handleRetrain = async (name) => {
+    console.time(`[TIMING] handleRetrain(${name}) TOTAL`);
     setRetraining(r=>({...r,[name]:true}));
     await new Promise(r=>setTimeout(r,30));
     try {
@@ -7961,7 +7962,7 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
       const sd = cleanStoredRows.length > 0
         ? {...(stockDataMap[name] || loadStockData(name) || {}), rows: cleanStoredRows, name}
         : (stockDataMap[name] || loadStockData(name));
-      if(!sd || sd.rows.length < 60){ setRetraining(r=>({...r,[name]:false})); return; }
+      if(!sd || sd.rows.length < 60){ setRetraining(r=>({...r,[name]:false})); console.timeEnd(`[TIMING] handleRetrain(${name}) TOTAL`); return; }
       let rows = [...sd.rows];
       // Apply 2yr recency window
       const lastDate = rows[rows.length-1].date;
@@ -7969,14 +7970,21 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
       const cutStr = cutoff.toISOString().split("T")[0];
       const filtered = rows.filter(r=>r.date>=cutStr);
       if(filtered.length>=60) rows=filtered;
+      console.log(`[TIMING] handleRetrain(${name}): ${rows.length} rows going into training`);
+      console.time(`[TIMING] handleRetrain(${name}) buildFeatures`);
       const features = buildFeaturesForStock(rows, name, null, null, stockDataMap);
+      console.timeEnd(`[TIMING] handleRetrain(${name}) buildFeatures`);
+      console.time(`[TIMING] handleRetrain(${name}) train30/60/90`);
       const g30 = trainModelsGuarded(rows, features, 30, null, null);
       await new Promise(r=>setTimeout(r,0));
       const g60 = trainModelsGuarded(rows, features, 60, null, null);
       await new Promise(r=>setTimeout(r,0));
       const g90 = trainModelsGuarded(rows, features, 90, null, null);
       await new Promise(r=>setTimeout(r,0));
+      console.timeEnd(`[TIMING] handleRetrain(${name}) train30/60/90`);
+      console.time(`[TIMING] handleRetrain(${name}) walkForwardBacktest`);
       const backtest = walkForwardBacktest(rows, features, 30, 5, name, true);
+      console.timeEnd(`[TIMING] handleRetrain(${name}) walkForwardBacktest`);
       const models = {m30:g30.model, m60:g60.model, m90:g90.model, backtest, trainedAt:new Date().toISOString(), runCount:(sd.models?.runCount||0)+1};
       if(g30.model) saveModelWeights(name, models, g30.model.norm);
       // Update iq_train_results with correct 2yr window dates so window display stays accurate
@@ -8026,6 +8034,7 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
       }
     } catch(e){ log("LIVELAB","ERROR",`Retrain ${name} failed: ${e.message}`); }
     setRetraining(r=>({...r,[name]:false}));
+    console.timeEnd(`[TIMING] handleRetrain(${name}) TOTAL`);
   };
 
   // ── Daily check-in handler ─────────────────────────────────────────────────

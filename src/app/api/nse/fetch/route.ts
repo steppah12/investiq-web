@@ -1,12 +1,36 @@
 // @ts-nocheck
 import { NextRequest, NextResponse } from 'next/server'
 import { TRACKED_STOCKS, fetchAndStoreStock, fetchAndStoreAllTrackedStocks } from '@/lib/nseSync'
+import { runFullRosterCatchupAndRotation } from '@/lib/liveLab/pipeline'
+
+// Same auth as /api/cron/daily-update — this endpoint does real work
+// (outbound scrapes + Supabase writes) and had no auth at all before,
+// meaning anyone who found the URL could trigger it repeatedly on demand.
+function isAuthorized(request: NextRequest): boolean {
+  const authHeader = request.headers.get('authorization')
+  const secret = process.env.CRON_SECRET
+  if (!secret) return false // no fallback string — missing env var means "deny", not "dev-secret"
+  return authHeader === `Bearer ${secret}`
+}
 
 export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
   try {
     const { searchParams } = new URL(request.url)
     const tickerParam = searchParams.get('ticker')
     const nameParam = searchParams.get('name')
+    const runRoster = searchParams.get('runRoster')
+
+    // Phase C — manual trigger only, not part of the daily cron yet.
+    // Catches up every trained stock (not just the original 5) and runs
+    // promotion/relegation. Safe to run repeatedly; each stock only
+    // processes dates it hasn't already got a journal entry for.
+    if (runRoster === 'true') {
+      const result = await runFullRosterCatchupAndRotation()
+      return NextResponse.json({ success: !result.error, ...result })
+    }
 
     if (nameParam) {
       const ticker = TRACKED_STOCKS[nameParam]
@@ -38,6 +62,9 @@ export async function GET(request: NextRequest) {
 // POST endpoint for manual single-stock refresh from the UI, e.g.
 // fetch('/api/nse/fetch', { method: 'POST', body: JSON.stringify({ name: 'Stanbic Bank' }) })
 export async function POST(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
   try {
     const { name, ticker } = await request.json()
 

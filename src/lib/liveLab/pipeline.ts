@@ -30,6 +30,17 @@ const SHADOW_JOURNAL_KEY = 'iq_lab_journal_auto'
 const SHADOW_PAPER_KEY = 'iq_lab_paper_auto'
 const SHADOW_PAPER_START = 100000
 
+// ── Roster (Phase C) ──────────────────────────────────────────────────────────
+// NOT wired into the daily cron yet — only reachable via the manual
+// ?runRoster=true endpoint until you've reviewed a week of Phase B results
+// and we decide together to make it part of the automatic daily run.
+const ROSTER_KEY = 'iq_lab_roster'
+const LEADERBOARD_KEY = 'iq_lab_leaderboard_monthly'
+const MAX_ACTIVE_STOCKS = 10
+const RANKING_WINDOW_DAYS = 5 // "a week" of trading days
+const LEADERBOARD_WINDOW_DAYS = 20 // "a month" of trading days
+const MIN_SAMPLE_FOR_RANKING = 5 // don't judge a stock on fewer than this many scored predictions
+
 const STOCK_BANDS = {
   'Stanbic Bank': 1.5,
   'Co-op Bank': 1.0,
@@ -37,6 +48,7 @@ const STOCK_BANDS = {
   'ABSA NewGold ETF': 2.0,
   'Crown Paints': 1.0,
 }
+const DEFAULT_BAND = 1.5
 
 function safeName(name) {
   return name.replace(/\s+/g, '_')
@@ -44,10 +56,10 @@ function safeName(name) {
 
 // ── Step 1: pull everything the engine needs from real Supabase into the
 // in-memory store the extracted algorithm code runs against. ────────────────
-async function hydrateFromSupabase() {
+async function hydrateFromSupabase(stockNames) {
   const records = {}
 
-  for (const name of LAB_STOCKS) {
+  for (const name of stockNames) {
     // CRITICAL: iq_stock_<name> is stored as a PLAIN ARRAY by the real app
     // (saveStockData/loadStockData), not {name, rows}. Loading it any other
     // way would look empty to the engine and risk the catch-up pipeline
@@ -74,15 +86,18 @@ async function hydrateFromSupabase() {
     startedAt: new Date().toISOString(),
   })
 
+  records[ROSTER_KEY] = await remoteDb.load(ROSTER_KEY, {})
+  records[LEADERBOARD_KEY] = await remoteDb.load(LEADERBOARD_KEY, null)
+
   hydrateEngineStore(records)
 }
 
 // ── Step 2 (after all processing): push the in-memory results back out. ─────
-async function persistToSupabase() {
+async function persistToSupabase(stockNames) {
   const dump = dumpEngineStore()
   const writes = []
 
-  for (const name of LAB_STOCKS) {
+  for (const name of stockNames) {
     writes.push(remoteDb.save(STOCK_KEY(name), dump[STOCK_KEY(name)]))
     writes.push(remoteDb.save(`iq_weights_${safeName(name)}`, dump[`iq_weights_${safeName(name)}`]))
     writes.push(remoteDb.save(`iq_lhist_${safeName(name)}`, dump[`iq_lhist_${safeName(name)}`]))
@@ -90,6 +105,8 @@ async function persistToSupabase() {
   writes.push(remoteDb.save('iq_train_results', dump['iq_train_results']))
   writes.push(remoteDb.save(SHADOW_JOURNAL_KEY, dump[SHADOW_JOURNAL_KEY]))
   writes.push(remoteDb.save(SHADOW_PAPER_KEY, dump[SHADOW_PAPER_KEY]))
+  writes.push(remoteDb.save(ROSTER_KEY, dump[ROSTER_KEY]))
+  if (dump[LEADERBOARD_KEY]) writes.push(remoteDb.save(LEADERBOARD_KEY, dump[LEADERBOARD_KEY]))
 
   await Promise.all(writes)
 }
@@ -97,9 +114,9 @@ async function persistToSupabase() {
 // Builds the cross-stock map buildFeaturesForStock/generatePredictionGuarded
 // need (sector momentum etc.) from whatever's currently in the in-memory
 // store — same shape as the browser's `stockDataMap` React state.
-function buildStockDataMap() {
+function buildStockDataMap(stockNames) {
   const map = {}
-  for (const name of LAB_STOCKS) {
+  for (const name of stockNames) {
     const data = loadStockData(name)
     if (data) map[name] = data
   }
@@ -108,8 +125,10 @@ function buildStockDataMap() {
 
 // Evaluates one pending journal entry against a later actual close —
 // same math as handleCheckin's evaluation block in InvestIQApp.tsx.
+// Stocks outside the original 5 fall back to a 1.5% deadband — reasonable
+// default, but you may want to tune per-stock as you see real results.
 function evaluateEntry(entry, actualClose, paper) {
-  const band = STOCK_BANDS[entry.stock] || 1.5
+  const band = STOCK_BANDS[entry.stock] || DEFAULT_BAND
   const prevPrice = entry.price
   let actual = null
   let correct = null
@@ -138,8 +157,8 @@ function evaluateEntry(entry, actualClose, paper) {
 // steps as handleRetrain in InvestIQApp.tsx, just parameterised by date so
 // it can be replayed for each day in a multi-day catch-up instead of only
 // ever running against "today".
-function retrainAndPredictThrough(name, uptoDate) {
-  const stockDataMap = buildStockDataMap()
+function retrainAndPredictThrough(name, uptoDate, stockNames) {
+  const stockDataMap = buildStockDataMap(stockNames)
   const fullData = stockDataMap[name]
   if (!fullData) return null
 
@@ -181,7 +200,7 @@ function retrainAndPredictThrough(name, uptoDate) {
 // Processes every trading day this stock has stored data for but hasn't yet
 // had a journal cycle for — the actual "catch-up" fix. If 5 days passed
 // since the last run, this produces 5 evaluate+retrain+predict cycles, not 1.
-function catchUpStock(name) {
+function catchUpStock(name, stockNames) {
   const data = loadStockData(name)
   if (!data || data.rows.length < 60) {
     return { stockName: name, status: 'insufficient_data', rowCount: data?.rows?.length || 0 }
@@ -214,7 +233,7 @@ function catchUpStock(name) {
     }
 
     // 2. Retrain through this date and generate the next prediction.
-    const result = retrainAndPredictThrough(name, date)
+    const result = retrainAndPredictThrough(name, date, stockNames)
     if (result?.pred) {
       const alreadyLogged = journal.some((e) => e.date === date && e.stock === name)
       if (!alreadyLogged) {
@@ -222,7 +241,7 @@ function catchUpStock(name) {
           id: Date.now() + Math.random(),
           date,
           stock: name,
-          ticker: LAB_TICKERS[name],
+          ticker: LAB_TICKERS[name] || null, // null = no known live ticker for this stock yet
           signal: result.pred.signal,
           confidence: result.pred.confidence,
           probUp: Math.round((result.pred.probUp || 0) * 100),
@@ -254,26 +273,201 @@ function catchUpStock(name) {
     }
   }
 
-  engineDb.save(SHADOW_JOURNAL_KEY, journal.slice(-500))
+  engineDb.save(SHADOW_JOURNAL_KEY, journal.slice(-2000))
   engineDb.save(SHADOW_PAPER_KEY, paper)
 
   return { stockName: name, status: 'caught_up', cyclesRun }
 }
 
 // Entry point called from nseSync.ts after the day's prices are scraped in.
+// UNCHANGED from before — still only the original 5 stocks. This keeps
+// today's production behavior exactly as-is; the roster/rotation system
+// below is a separate, not-yet-wired-in path.
 export async function runLiveLabCatchup() {
-  await hydrateFromSupabase()
+  await hydrateFromSupabase(LAB_STOCKS)
 
   const results = []
   for (const name of LAB_STOCKS) {
     try {
-      results.push(catchUpStock(name))
+      results.push(catchUpStock(name, LAB_STOCKS))
     } catch (error) {
       console.error(`Live Lab catch-up failed for ${name}:`, error)
       results.push({ stockName: name, status: 'error', error: error instanceof Error ? error.message : String(error) })
     }
   }
 
-  await persistToSupabase()
+  await persistToSupabase(LAB_STOCKS)
   return results
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase C: roster / rotation / leaderboard — MANUAL TRIGGER ONLY for now.
+// Not called by the daily cron. Reachable via GET /api/nse/fetch?runRoster=true
+// until you've reviewed Phase B's results and want this wired into the
+// automatic daily run too.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Finds every stock that has both price history AND a trained model —
+// i.e. everything eligible for Live Lab, not just the original 5.
+async function discoverTrainedStocks() {
+  const stockKeys = await remoteDb.keys('iq_stock_')
+  const weightKeys = await remoteDb.keys('iq_weights_')
+  const weightedSafeNames = new Set(weightKeys.map((k) => k.replace('iq_weights_', '')))
+
+  const names = []
+  for (const key of stockKeys) {
+    const safe = key.replace('iq_stock_', '')
+    if (weightedSafeNames.has(safe)) {
+      names.push(safe.replace(/_/g, ' '))
+    }
+  }
+  return names
+}
+
+// Rolling accuracy over the last N trading days this stock has a *scored*
+// prediction for (actual != null) — not the last N calendar days, since
+// weekends/gaps would water that down.
+function computeRollingAccuracy(stockName, journal, windowSize) {
+  const scored = journal
+    .filter((e) => e.stock === stockName && e.actual != null)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+  const recent = scored.slice(-windowSize)
+  if (recent.length === 0) return { accuracy: null, sampleSize: 0 }
+  const correct = recent.filter((e) => e.correct).length
+  return { accuracy: correct / recent.length, sampleSize: recent.length }
+}
+
+// Registers newly-trained stocks, promotes/relegates between active and
+// benched based on rolling weekly accuracy, and rebuilds the monthly
+// leaderboard. Operates on the already-hydrated in-memory store.
+function rotateRoster(trainedStocks) {
+  const roster = engineDb.load(ROSTER_KEY, {})
+  const journal = engineDb.load(SHADOW_JOURNAL_KEY, [])
+  const today = new Date().toISOString().split('T')[0]
+
+  // Register newcomers as benched; refresh ticker info for everyone.
+  for (const name of trainedStocks) {
+    if (!roster[name]) {
+      roster[name] = {
+        tier: 'benched',
+        ticker: LAB_TICKERS[name] || null,
+        joinedAt: today,
+        lastPromotedAt: null,
+        lastBenchedAt: null,
+      }
+    } else {
+      roster[name].ticker = LAB_TICKERS[name] || roster[name].ticker || null
+    }
+  }
+  // Drop anything that no longer has a trained model.
+  for (const name of Object.keys(roster)) {
+    if (!trainedStocks.includes(name)) delete roster[name]
+  }
+
+  const scores = {}
+  for (const name of trainedStocks) {
+    scores[name] = computeRollingAccuracy(name, journal, RANKING_WINDOW_DAYS)
+  }
+
+  let activeNames = Object.entries(roster)
+    .filter(([, r]) => r.tier === 'active')
+    .map(([n]) => n)
+  let benchedNames = Object.entries(roster)
+    .filter(([, r]) => r.tier === 'benched')
+    .map(([n]) => n)
+
+  const rankBenchedBestFirst = () =>
+    benchedNames.sort((a, b) => {
+      const sa = scores[a]
+      const sb = scores[b]
+      if (sa.accuracy == null && sb.accuracy == null) return 0
+      if (sa.accuracy == null) return 1
+      if (sb.accuracy == null) return -1
+      return sb.accuracy - sa.accuracy
+    })
+
+  // Fill any empty active slots first — no minimum sample required here,
+  // since an empty slot beats leaving it empty even for a brand-new stock.
+  rankBenchedBestFirst()
+  while (activeNames.length < MAX_ACTIVE_STOCKS && benchedNames.length > 0) {
+    const promote = benchedNames.shift()
+    roster[promote].tier = 'active'
+    roster[promote].lastPromotedAt = today
+    activeNames.push(promote)
+  }
+
+  // Once full, only swap a stock out if a benched one has BOTH enough of a
+  // track record (min sample) AND a genuinely better rolling accuracy than
+  // the worst-performing active stock (which also needs a minimum sample —
+  // don't relegate a stock just because it's too new to judge yet).
+  if (activeNames.length >= MAX_ACTIVE_STOCKS) {
+    const rankedActiveWorstFirst = [...activeNames].sort(
+      (a, b) => (scores[a].accuracy ?? -1) - (scores[b].accuracy ?? -1)
+    )
+    const eligibleBenched = benchedNames
+      .filter((n) => scores[n].sampleSize >= MIN_SAMPLE_FOR_RANKING)
+      .sort((a, b) => scores[b].accuracy - scores[a].accuracy)
+
+    const worstActive = rankedActiveWorstFirst[0]
+    const bestBenched = eligibleBenched[0]
+
+    if (
+      worstActive &&
+      bestBenched &&
+      scores[worstActive].sampleSize >= MIN_SAMPLE_FOR_RANKING &&
+      scores[bestBenched].accuracy > scores[worstActive].accuracy
+    ) {
+      roster[worstActive].tier = 'benched'
+      roster[worstActive].lastBenchedAt = today
+      roster[bestBenched].tier = 'active'
+      roster[bestBenched].lastPromotedAt = today
+    }
+  }
+
+  engineDb.save(ROSTER_KEY, roster)
+
+  // Monthly leaderboard — everyone, active or benched, ranked by rolling
+  // 20-trading-day accuracy, so you can see the full picture.
+  const rankings = trainedStocks
+    .map((name) => {
+      const s = computeRollingAccuracy(name, journal, LEADERBOARD_WINDOW_DAYS)
+      return { stock: name, tier: roster[name].tier, accuracy: s.accuracy, sampleSize: s.sampleSize }
+    })
+    .sort((a, b) => (b.accuracy ?? -1) - (a.accuracy ?? -1))
+
+  const leaderboard = { updatedAt: new Date().toISOString(), rankings }
+  engineDb.save(LEADERBOARD_KEY, leaderboard)
+
+  return { roster, leaderboard }
+}
+
+// The Phase C entry point: catch up EVERY trained stock (not just the
+// original 5), then run promotion/relegation, then persist everything.
+export async function runFullRosterCatchupAndRotation() {
+  const trainedStocks = await discoverTrainedStocks()
+  if (trainedStocks.length === 0) {
+    return { error: 'No trained stocks found — train at least one stock in the app first.' }
+  }
+
+  await hydrateFromSupabase(trainedStocks)
+
+  const catchupResults = []
+  for (const name of trainedStocks) {
+    try {
+      catchupResults.push(catchUpStock(name, trainedStocks))
+    } catch (error) {
+      console.error(`Roster catch-up failed for ${name}:`, error)
+      catchupResults.push({
+        stockName: name,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  const { roster, leaderboard } = rotateRoster(trainedStocks)
+
+  await persistToSupabase(trainedStocks)
+
+  return { trainedStockCount: trainedStocks.length, catchupResults, roster, leaderboard }
 }
