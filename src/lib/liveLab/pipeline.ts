@@ -41,6 +41,7 @@ const MAX_ACTIVE_STOCKS = 10
 const RANKING_WINDOW_DAYS = 5 // "a week" of trading days
 const LEADERBOARD_WINDOW_DAYS = 20 // "a month" of trading days
 const MIN_SAMPLE_FOR_RANKING = 5 // don't judge a stock on fewer than this many scored predictions
+const MAX_CATCHUP_DAYS = 20 // safety cap — see catchUpStock's comment for why this exists
 
 const STOCK_BANDS = {
   'Stanbic Bank': 1.5,
@@ -82,6 +83,16 @@ async function writeRawPredictionForBot(name, date, price, pred) {
   const { action, confidence } = deriveRawAction(pred)
   const ticker = LAB_TICKERS[name] || name // Soko Play's search accepts either
 
+  // The engine's own kellyPct/kellyRaw are ALREADY half-Kelly (see
+  // engine.ts: `kelly = kellyFull * 0.5`, a built-in safety dampening for
+  // the main app's own display). Since this table feeds the trading bot
+  // running against virtual money — where you explicitly want full Kelly,
+  // not the conservative version — we reconstruct the undamped fraction by
+  // doubling it here, rather than touching engine.ts (which stays
+  // byte-faithful to the browser app). Clamped at 100%: not a risk
+  // decision, just "can't allocate more than the full account."
+  const fullKellyPct = Math.min(100, (pred.kellyRaw || 0) * 2 * 100)
+
   try {
     await supabaseAdmin.from('predictions').upsert(
       {
@@ -91,6 +102,7 @@ async function writeRawPredictionForBot(name, date, price, pred) {
         price,
         action,
         confidence,
+        kelly_pct: fullKellyPct,
         raw_prob_up: pred.probUp ?? null,
         raw_prob_down: pred.probDown ?? null,
         raw_prob_flat: pred.probFlat ?? null,
@@ -263,7 +275,24 @@ async function catchUpStock(name, stockNames) {
 
   // Every stored trading day after the last one we already made a
   // prediction for, in chronological order.
-  const pendingDates = data.rows.map((r) => r.date).filter((d) => !lastProcessedDate || d > lastProcessedDate)
+  let pendingDates = data.rows.map((r) => r.date).filter((d) => !lastProcessedDate || d > lastProcessedDate)
+
+  // CRITICAL CAP: a brand-new stock (no journal history at all) would
+  // otherwise have pendingDates = its ENTIRE multi-year row history —
+  // hundreds or thousands of full retrain+backtest cycles run
+  // sequentially. That's not a "catch up a few missed days" situation,
+  // it's a runaway job that would blow any serverless timeout and serves
+  // no purpose (nobody needs 2 years of backtested daily predictions
+  // replayed). Cap to the most recent MAX_CATCHUP_DAYS trading days —
+  // gives a real, meaningful track record to start ranking from without
+  // trying to reconstruct all of history. Applies to ANY gap this large,
+  // not just brand-new stocks (e.g. a stock re-added after a long pause).
+  if (pendingDates.length > MAX_CATCHUP_DAYS) {
+    console.warn(
+      `[catchUpStock] ${name}: ${pendingDates.length} pending days, capping to the most recent ${MAX_CATCHUP_DAYS}.`
+    )
+    pendingDates = pendingDates.slice(-MAX_CATCHUP_DAYS)
+  }
 
   if (pendingDates.length === 0) {
     return { stockName: name, status: 'up_to_date' }
