@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { db as remoteDb } from '@/lib/database'
+import { supabaseAdmin } from '@/lib/supabase/client'
 import {
   db as engineDb,
   hydrateEngineStore,
@@ -52,6 +53,54 @@ const DEFAULT_BAND = 1.5
 
 function safeName(name) {
   return name.replace(/\s+/g, '_')
+}
+
+// Derives the model's RAW, pre-gate directional belief from its underlying
+// probabilities — NOT from pred.signal, which is already post-gate (can be
+// forced to neutral by the engine's internal IR/deadband guards). This is
+// what gets written to `predictions` for the trading bot to read.
+function deriveRawAction(pred) {
+  const probUp = pred.probUp || 0
+  const probDown = pred.probDown || 0
+  const probFlat = pred.probFlat || 0
+  // If probabilities are missing/malformed (all zero), don't let the tie-break
+  // fall through to a false BUY at zero confidence — that's a nonsensical
+  // signal to hand the bot.
+  if (probUp === 0 && probDown === 0 && probFlat === 0) return { action: 'HOLD', confidence: 0 }
+  if (probUp >= probDown && probUp >= probFlat) return { action: 'BUY', confidence: probUp }
+  if (probDown >= probUp && probDown >= probFlat) return { action: 'SELL', confidence: probDown }
+  return { action: 'HOLD', confidence: probFlat }
+}
+
+// Writes one row to the bot-facing `predictions` table per stock per day.
+// Uses supabaseAdmin (service role) directly — this table is locked to
+// service-role-only in RLS, and the trading bot reads it with its own
+// service-role key from a completely separate process, never through this
+// app's API.
+async function writeRawPredictionForBot(name, date, price, pred) {
+  if (!supabaseAdmin) return // no service role key configured — skip quietly
+  const { action, confidence } = deriveRawAction(pred)
+  const ticker = LAB_TICKERS[name] || name // Soko Play's search accepts either
+
+  try {
+    await supabaseAdmin.from('predictions').upsert(
+      {
+        ticker,
+        stock_name: name,
+        date,
+        price,
+        action,
+        confidence,
+        raw_prob_up: pred.probUp ?? null,
+        raw_prob_down: pred.probDown ?? null,
+        raw_prob_flat: pred.probFlat ?? null,
+        engine_gated_action: pred.signal ?? null,
+      },
+      { onConflict: 'ticker,date' }
+    )
+  } catch (error) {
+    console.error(`Failed to write raw prediction for ${name} (${date}):`, error)
+  }
 }
 
 // ── Step 1: pull everything the engine needs from real Supabase into the
@@ -200,7 +249,7 @@ function retrainAndPredictThrough(name, uptoDate, stockNames) {
 // Processes every trading day this stock has stored data for but hasn't yet
 // had a journal cycle for — the actual "catch-up" fix. If 5 days passed
 // since the last run, this produces 5 evaluate+retrain+predict cycles, not 1.
-function catchUpStock(name, stockNames) {
+async function catchUpStock(name, stockNames) {
   const data = loadStockData(name)
   if (!data || data.rows.length < 60) {
     return { stockName: name, status: 'insufficient_data', rowCount: data?.rows?.length || 0 }
@@ -235,6 +284,8 @@ function catchUpStock(name, stockNames) {
     // 2. Retrain through this date and generate the next prediction.
     const result = retrainAndPredictThrough(name, date, stockNames)
     if (result?.pred) {
+      await writeRawPredictionForBot(name, date, row.close, result.pred)
+
       const alreadyLogged = journal.some((e) => e.date === date && e.stock === name)
       if (!alreadyLogged) {
         const entry = {
@@ -289,7 +340,7 @@ export async function runLiveLabCatchup() {
   const results = []
   for (const name of LAB_STOCKS) {
     try {
-      results.push(catchUpStock(name, LAB_STOCKS))
+      results.push(await catchUpStock(name, LAB_STOCKS))
     } catch (error) {
       console.error(`Live Lab catch-up failed for ${name}:`, error)
       results.push({ stockName: name, status: 'error', error: error instanceof Error ? error.message : String(error) })
@@ -454,7 +505,7 @@ export async function runFullRosterCatchupAndRotation() {
   const catchupResults = []
   for (const name of trainedStocks) {
     try {
-      catchupResults.push(catchUpStock(name, trainedStocks))
+      catchupResults.push(await catchUpStock(name, trainedStocks))
     } catch (error) {
       console.error(`Roster catch-up failed for ${name}:`, error)
       catchupResults.push({
