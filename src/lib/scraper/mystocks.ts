@@ -52,10 +52,20 @@ export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote>
   const url = `${MYSTOCKS_BASE}${encodeURIComponent(ticker)}`
   const res = await fetch(url, {
     headers: {
-      // A plain fetch without a UA sometimes gets a stripped-down page from
-      // this site — a normal browser UA gets the full page reliably.
+      // A bare User-Agent with nothing else is itself a common automated-
+      // request signal. Confirmed via real diagnostic: this exact URL
+      // returns HTML that's missing the quote blob entirely when fetched
+      // with just a User-Agent — sending a fuller, more realistic set of
+      // headers a genuine browser would include.
       'User-Agent':
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Referer: 'https://live.mystocks.co.ke/',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'same-origin',
     },
     // Always hit origin fresh — this is a daily cron job, not a page the
     // user is browsing, so there's nothing to cache.
