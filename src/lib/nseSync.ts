@@ -218,21 +218,21 @@ export async function fetchAndStoreAllTrackedStocks() {
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }
 
-  // Only run the (expensive) retrain/predict pipeline if at least one stock
-  // actually got a new close today — no point retraining on unchanged data.
-  const anyNewData = results.some((r) => r.status === 'updated')
-  if (anyNewData) {
-    try {
-      const catchupResults = await runLiveLabCatchup()
-      return { priceResults: results, liveLabResults: catchupResults }
-    } catch (error) {
-      console.error('Live Lab catch-up pipeline failed:', error)
-      return {
-        priceResults: results,
-        liveLabError: error instanceof Error ? error.message : String(error),
-      }
+  // Always attempt catch-up — catchUpStock() already safely reports
+  // "up_to_date" when a stock has nothing new to process, so this is
+  // cheap on a no-op day. Previously gated behind "did myStocks succeed
+  // today," which silently meant the whole retrain/predict pipeline would
+  // never run again once myStocks started failing — prices can now also
+  // arrive via the bot's separate Soko Play path (see bot/eod-close-and-match.mjs),
+  // and this needs to pick those up regardless of myStocks' status.
+  try {
+    const catchupResults = await runLiveLabCatchup()
+    return { priceResults: results, liveLabResults: catchupResults }
+  } catch (error) {
+    console.error('Live Lab catch-up pipeline failed:', error)
+    return {
+      priceResults: results,
+      liveLabError: error instanceof Error ? error.message : String(error),
     }
   }
-
-  return { priceResults: results, liveLabResults: [] }
 }
