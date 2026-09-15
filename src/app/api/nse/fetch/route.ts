@@ -55,7 +55,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: true, ...result, timestamp: new Date().toISOString() })
   } catch (error) {
     console.error('NSE fetch error:', error)
-    return NextResponse.json({ error: 'Failed to fetch NSE data' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Failed to fetch NSE data', details: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    )
   }
 }
 
@@ -79,6 +82,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, message: `Updated ${stockName}`, result })
   } catch (error) {
     console.error('Manual NSE fetch error:', error)
-    return NextResponse.json({ error: 'Failed to update NSE data' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Failed to update NSE data', details: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    )
   }
 }
