@@ -70,17 +70,21 @@ export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote>
 
   const blobMatch = html.match(/\{"reload":\d+,"stamp":\d+,"track":\d+,"time":"[^"]*","update":\d+,"klass":"[^"]*","market":"[^"]*","data":\[[^\]]*\]\}/)
   if (!blobMatch) {
-    // The blob was confirmed present and matching this exact regex via a
-    // manual check outside of Vercel — if this throws in production, it's
-    // likely the site responding differently to Vercel's datacenter IP
-    // (rate limiting, bot detection, a simplified/CAPTCHA page) rather
-    // than the page format actually changing. Capture enough of the real
-    // response to tell the difference without guessing blind next time.
-    const snippet = html.slice(0, 500).replace(/\s+/g, ' ')
-    const hasLoginPrompt = /log ?in|captcha|access denied|blocked/i.test(html)
+    // Show the raw bytes right around wherever "reload" actually appears
+    // (if at all) — this is far more useful than the page's first 500
+    // chars, since it shows exactly how quotes/braces are really encoded
+    // in this response (e.g. &quot; instead of ", if the JSON is embedded
+    // as an HTML attribute value rather than inline script text).
+    const reloadIdx = html.indexOf('"reload"')
+    const altReloadIdx = reloadIdx === -1 ? html.indexOf('reload') : reloadIdx
+    const contextSnippet =
+      altReloadIdx === -1
+        ? '(the string "reload" does not appear anywhere in the response at all)'
+        : html.slice(Math.max(0, altReloadIdx - 100), altReloadIdx + 400).replace(/\s+/g, ' ')
+
     throw new Error(
-      `myStocks: quote blob not found for ${ticker}. HTTP ${res.status}, response length ${html.length} chars, ` +
-        `looks like a login/blocked page: ${hasLoginPrompt}. First 500 chars: ${snippet}`
+      `myStocks: quote blob not found for ${ticker}. HTTP ${res.status}, response length ${html.length} chars. ` +
+        `Context around "reload": ${contextSnippet}`
     )
   }
 
