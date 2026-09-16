@@ -315,6 +315,16 @@ async function catchUpStock(name, stockNames) {
     if (result?.pred) {
       await writeRawPredictionForBot(name, date, row.close, result.pred)
 
+      // Same raw derivation used for the bot's predictions table — the
+      // engine's own pred.signal is already IR-gated and skews heavily
+      // to HOLD, which starves the journal (and roster ranking, which
+      // reads this journal) of real BUY/SELL evaluations. Using the raw,
+      // pre-gate signal here means every stock actually gets scored on a
+      // real directional call. The gated signal is still recorded
+      // (gatedSignal) purely for reference/comparison — it's just no
+      // longer what drives evaluation or paper trading.
+      const { action: rawAction } = deriveRawAction(result.pred)
+
       const alreadyLogged = journal.some((e) => e.date === date && e.stock === name)
       if (!alreadyLogged) {
         const entry = {
@@ -322,7 +332,8 @@ async function catchUpStock(name, stockNames) {
           date,
           stock: name,
           ticker: LAB_TICKERS[name] || null, // null = no known live ticker for this stock yet
-          signal: result.pred.signal,
+          signal: rawAction,
+          gatedSignal: result.pred.signal, // reference only — see comment above
           confidence: result.pred.confidence,
           probUp: Math.round((result.pred.probUp || 0) * 100),
           actual: null,
@@ -331,7 +342,7 @@ async function catchUpStock(name, stockNames) {
         }
         journal.push(entry)
 
-        if (result.pred.signal !== 'HOLD' && result.lastClose > 0) {
+        if (rawAction !== 'HOLD' && result.lastClose > 0) {
           const alloc = Math.floor(paper.value * 0.15)
           const shares = Math.floor(alloc / result.lastClose)
           if (shares > 0) {
@@ -340,7 +351,7 @@ async function catchUpStock(name, stockNames) {
               id: Date.now() + Math.random(),
               date,
               stock: name,
-              signal: result.pred.signal,
+              signal: rawAction,
               shares,
               entryPrice: result.lastClose,
               pnl: null,
@@ -349,7 +360,7 @@ async function catchUpStock(name, stockNames) {
           }
         }
       }
-      cyclesRun.push({ date, signal: result.pred.signal, backtestAccuracy: result.backtest?.avgAccuracy || null })
+      cyclesRun.push({ date, signal: rawAction, gatedSignal: result.pred.signal, backtestAccuracy: result.backtest?.avgAccuracy || null })
     }
   }
 
