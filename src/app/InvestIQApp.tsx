@@ -9055,7 +9055,17 @@ export default function InvestIQApp(){
       for(const name of listStocks()){
         try {
           const sd=loadStockData(name);
-          if(sd) initial[name]=sd;
+          if(sd) {
+            // BUGFIX: loadStockData() only returns {name, rows, features} —
+            // it never included model weights, so `hasTrained` (Live Lab's
+            // per-stock status check) was always false on every fresh page
+            // load, on every device, regardless of whether a model was
+            // actually trained and correctly persisted. Load weights here
+            // too, same as what a manual retrain already attaches.
+            const weights = loadModelWeights(name);
+            if(weights) sd.models = weights;
+            initial[name]=sd;
+          }
         } catch(e) { console.warn(`Skipping ${name} on load:`,e); }
       }
       setStockDataMap(initial);
