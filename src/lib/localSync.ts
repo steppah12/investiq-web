@@ -14,6 +14,22 @@
 // writing localStorage exactly as before, synchronously.
 import { db as remoteDb } from './database'
 
+// Tracks in-flight background writes to Supabase. Exists specifically so
+// the app can warn before the user closes/navigates away mid-write —
+// mirrorSaveToSupabase is fire-and-forget by design (keeps the UI fast),
+// but that means a write genuinely can be lost if the tab closes before
+// it finishes. This makes that risk visible instead of silent.
+let pendingWrites = 0
+let hydrationFailed = false
+
+export function hasPendingWrites(): boolean {
+  return pendingWrites > 0
+}
+
+export function didHydrationFail(): boolean {
+  return hydrationFailed
+}
+
 export async function hydrateLocalStorageFromSupabase(): Promise<void> {
   if (typeof window === 'undefined') return
   try {
@@ -27,15 +43,29 @@ export async function hydrateLocalStorageFromSupabase(): Promise<void> {
         console.warn('hydrate: failed to write key', key, e)
       }
     }
+    hydrationFailed = false
   } catch (e) {
     console.warn('hydrateLocalStorageFromSupabase failed — starting from local data only', e)
+    hydrationFailed = true
   }
 }
 
 export function mirrorSaveToSupabase(key: string, value: any): void {
-  remoteDb.save(key, value).catch((e) => console.warn('mirror save failed', key, e))
+  pendingWrites++
+  remoteDb
+    .save(key, value)
+    .catch((e) => console.warn('mirror save failed', key, e))
+    .finally(() => {
+      pendingWrites--
+    })
 }
 
 export function mirrorRemoveFromSupabase(key: string): void {
-  remoteDb.remove(key).catch((e) => console.warn('mirror remove failed', key, e))
+  pendingWrites++
+  remoteDb
+    .remove(key)
+    .catch((e) => console.warn('mirror remove failed', key, e))
+    .finally(() => {
+      pendingWrites--
+    })
 }
