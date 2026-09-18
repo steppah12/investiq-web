@@ -68,6 +68,37 @@ const db = {
 
 function hasAdminRole() { return true; }
 
+// ─── Deterministic training (explicit exception to "verbatim" below) ───────
+// GBDT's row-subsampling uses unseeded Math.random() (see the GBDT class
+// below — untouched). That means retraining the same stock on the same
+// day's data gives a different model every single time — real, and
+// inherent to the original algorithm, not a bug. trainModelsGuarded(),
+// walkForwardBacktest(), and generatePredictionGuarded() are wrapped
+// (search "DETERMINISM WRAPPER" below) to temporarily swap in a seeded
+// RNG for the duration of one call, derived from the actual input data —
+// same stock + same rows + same horizon => same seed => same result.
+// New data (tomorrow's close) changes the seed naturally, so this isn't
+// freezing the model, just making repeat calls on IDENTICAL data
+// reproducible. The exact same wrapper is applied in InvestIQApp.tsx to
+// keep browser and server behavior identical.
+function hashSeed(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
+}
+function seededRandom(seed) {
+  let s = seed | 0;
+  return function () {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // ─── Everything below this line is copied verbatim (sed 526,584p + 618,3453p
 // InvestIQApp.tsx) — do not hand-edit. ───────────────────────────────────────
 
@@ -1859,7 +1890,18 @@ function temporalLeakCheck(rows, trainEnd, testStart, testEnd, fold) {
 }
 
 // ─── WALK-FORWARD BACKTEST — with benchmarks, stratified splits, Wilson CI ────
+// DETERMINISM WRAPPER — see comment near hashSeed()/seededRandom() above.
 function walkForwardBacktest(rows, features, horizon=30, folds=5, stockName="", showNet=true) {
+  const seed = hashSeed(`backtest|${stockName}|${rows.length}|${rows[rows.length-1]?.date}|${horizon}|${folds}`);
+  const originalRandom = Math.random;
+  Math.random = seededRandom(seed);
+  try {
+    return walkForwardBacktestImpl(rows, features, horizon, folds, stockName, showNet);
+  } finally {
+    Math.random = originalRandom;
+  }
+}
+function walkForwardBacktestImpl(rows, features, horizon=30, folds=5, stockName="", showNet=true) {
   const results=[];
   const minPerFold=40;
   const usableFolds=Math.min(folds,Math.max(1,Math.floor((rows.length-horizon-50)/minPerFold)));
@@ -2726,7 +2768,18 @@ function trainEnsembleModels(rows, features, horizon) {
 }
 
 // Enhanced trainModels with all 5 guards
+// DETERMINISM WRAPPER — see comment near hashSeed()/seededRandom() above.
 function trainModelsGuarded(rows, features, horizon, warmStart=null, featWeights=null) {
+  const seed = hashSeed(`train|${rows.length}|${rows[rows.length-1]?.date}|${horizon}`);
+  const originalRandom = Math.random;
+  Math.random = seededRandom(seed);
+  try {
+    return trainModelsGuardedImpl(rows, features, horizon, warmStart, featWeights);
+  } finally {
+    Math.random = originalRandom;
+  }
+}
+function trainModelsGuardedImpl(rows, features, horizon, warmStart=null, featWeights=null) {
   const warnings=[];
   const isSmall = rows.length < SMALL_DATASET_THRESH;
 
@@ -2826,7 +2879,18 @@ function computeSectorMomentum(stockDataMap, excludeName) {
 }
 
 // Gap 3+4+5+6: full guarded prediction with sector momentum + Kelly
+// DETERMINISM WRAPPER — see comment near hashSeed()/seededRandom() above.
 function generatePredictionGuarded(stockData, macro, stockDataMap={}) {
+  const seed = hashSeed(`predict|${stockData?.name}|${stockData?.rows?.length}|${stockData?.rows?.[stockData.rows.length-1]?.date}`);
+  const originalRandom = Math.random;
+  Math.random = seededRandom(seed);
+  try {
+    return generatePredictionGuardedImpl(stockData, macro, stockDataMap);
+  } finally {
+    Math.random = originalRandom;
+  }
+}
+function generatePredictionGuardedImpl(stockData, macro, stockDataMap={}) {
   const {rows,features,models,name}=stockData;
   if(!rows||rows.length<60||!features) return null;
   const lastIdx=rows.length-1; const f=features[lastIdx]; const expert=EXPERT_BASE[name];
