@@ -16,20 +16,22 @@ import {
   LAB_TICKERS,
 } from './engine'
 
-// ── Shadow mode ──────────────────────────────────────────────────────────────
-// These two keys are SEPARATE from your real iq_lab_journal / iq_lab_paper.
-// The automated pipeline writes its predictions, evaluations, and paper
-// trades here instead — so it can run every weekday alongside your manual
-// check-ins without touching your real track record, until we've confirmed
-// it produces the same results a human clicking through the UI would.
+// ── Live (graduated from shadow mode) ────────────────────────────────────────
+// Writes directly to the SAME keys the app's own manual check-in flow uses
+// (iq_lab_journal, iq_lab_paper) — confirmed compatible with the shapes
+// InvestIQApp.tsx's handleRetrain/handleCheckin write. Previously wrote to
+// separate iq_lab_journal_auto/iq_lab_paper_auto "shadow" keys during
+// validation — that phase is over, this is now the real, visible journal.
 //
-// Model weights, learning history, and iq_train_results DO update the real
-// keys (iq_weights_*, iq_lhist_*, iq_train_results) — that's equivalent to
-// you clicking "Retrain" yourself on new data, carries no risk to any
-// existing track record, and there's no reason to shadow it.
-const SHADOW_JOURNAL_KEY = 'iq_lab_journal_auto'
-const SHADOW_PAPER_KEY = 'iq_lab_paper_auto'
-const SHADOW_PAPER_START = 100000
+// Model weights, learning history, and iq_train_results already update the
+// real keys (iq_weights_*, iq_lhist_*, iq_train_results) — unchanged.
+const JOURNAL_KEY = 'iq_lab_journal'
+const PAPER_KEY = 'iq_lab_paper'
+const PAPER_START = 100000
+// Matches the real app's own cap in saveLabJournal() — respecting the
+// existing convention rather than introducing a different one now that
+// this writes to the same key the UI reads.
+const JOURNAL_CAP = 200
 
 // ── Roster (Phase C) ──────────────────────────────────────────────────────────
 // NOT wired into the daily cron yet — only reachable via the manual
@@ -140,9 +142,9 @@ async function hydrateFromSupabase(stockNames) {
   records['iq_deadband'] = await remoteDb.load('iq_deadband', { 30: 2.0, 60: 3.5, 90: 5.0 })
   records['iq_train_results'] = await remoteDb.load('iq_train_results', {})
 
-  records[SHADOW_JOURNAL_KEY] = await remoteDb.load(SHADOW_JOURNAL_KEY, [])
-  records[SHADOW_PAPER_KEY] = await remoteDb.load(SHADOW_PAPER_KEY, {
-    value: SHADOW_PAPER_START,
+  records[JOURNAL_KEY] = await remoteDb.load(JOURNAL_KEY, [])
+  records[PAPER_KEY] = await remoteDb.load(PAPER_KEY, {
+    value: PAPER_START,
     trades: [],
     startedAt: new Date().toISOString(),
   })
@@ -164,8 +166,8 @@ async function persistToSupabase(stockNames) {
     writes.push(remoteDb.save(`iq_lhist_${safeName(name)}`, dump[`iq_lhist_${safeName(name)}`]))
   }
   writes.push(remoteDb.save('iq_train_results', dump['iq_train_results']))
-  writes.push(remoteDb.save(SHADOW_JOURNAL_KEY, dump[SHADOW_JOURNAL_KEY]))
-  writes.push(remoteDb.save(SHADOW_PAPER_KEY, dump[SHADOW_PAPER_KEY]))
+  writes.push(remoteDb.save(JOURNAL_KEY, dump[JOURNAL_KEY]))
+  writes.push(remoteDb.save(PAPER_KEY, dump[PAPER_KEY]))
   writes.push(remoteDb.save(ROSTER_KEY, dump[ROSTER_KEY]))
   if (dump[LEADERBOARD_KEY]) writes.push(remoteDb.save(LEADERBOARD_KEY, dump[LEADERBOARD_KEY]))
 
@@ -267,8 +269,8 @@ async function catchUpStock(name, stockNames) {
     return { stockName: name, status: 'insufficient_data', rowCount: data?.rows?.length || 0 }
   }
 
-  const journal = engineDb.load(SHADOW_JOURNAL_KEY, [])
-  const paper = engineDb.load(SHADOW_PAPER_KEY, { value: SHADOW_PAPER_START, trades: [] })
+  const journal = engineDb.load(JOURNAL_KEY, [])
+  const paper = engineDb.load(PAPER_KEY, { value: PAPER_START, trades: [] })
 
   const stockJournal = journal.filter((e) => e.stock === name)
   const lastProcessedDate = stockJournal.length > 0 ? stockJournal[stockJournal.length - 1].date : null
@@ -343,20 +345,25 @@ async function catchUpStock(name, stockNames) {
         journal.push(entry)
 
         if (rawAction !== 'HOLD' && result.lastClose > 0) {
-          const alloc = Math.floor(paper.value * 0.15)
-          const shares = Math.floor(alloc / result.lastClose)
-          if (shares > 0) {
-            paper.trades = paper.trades || []
-            paper.trades.push({
-              id: Date.now() + Math.random(),
-              date,
-              stock: name,
-              signal: rawAction,
-              shares,
-              entryPrice: result.lastClose,
-              pnl: null,
-              closed: false,
-            })
+          const alreadyHasTrade = (paper.trades || []).some(
+            (t) => t.stock === name && t.date === date && !t.closed
+          )
+          if (!alreadyHasTrade) {
+            const alloc = Math.floor(paper.value * 0.15)
+            const shares = Math.floor(alloc / result.lastClose)
+            if (shares > 0) {
+              paper.trades = paper.trades || []
+              paper.trades.push({
+                id: Date.now() + Math.random(),
+                date,
+                stock: name,
+                signal: rawAction,
+                shares,
+                entryPrice: result.lastClose,
+                pnl: null,
+                closed: false,
+              })
+            }
           }
         }
       }
@@ -364,8 +371,8 @@ async function catchUpStock(name, stockNames) {
     }
   }
 
-  engineDb.save(SHADOW_JOURNAL_KEY, journal.slice(-2000))
-  engineDb.save(SHADOW_PAPER_KEY, paper)
+  engineDb.save(JOURNAL_KEY, journal.slice(-JOURNAL_CAP))
+  engineDb.save(PAPER_KEY, paper)
 
   return { stockName: name, status: 'caught_up', cyclesRun }
 }
@@ -433,7 +440,7 @@ function computeRollingAccuracy(stockName, journal, windowSize) {
 // leaderboard. Operates on the already-hydrated in-memory store.
 function rotateRoster(trainedStocks) {
   const roster = engineDb.load(ROSTER_KEY, {})
-  const journal = engineDb.load(SHADOW_JOURNAL_KEY, [])
+  const journal = engineDb.load(JOURNAL_KEY, [])
   const today = new Date().toISOString().split('T')[0]
 
   // Register newcomers as benched; refresh ticker info for everyone.
