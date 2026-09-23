@@ -3,6 +3,7 @@ import "dotenv/config";
 import { launchSession } from "./src/session.js";
 import { readStockPrice } from "./src/priceReader.js";
 import { searchTermFor } from "./src/stockNameMap.js";
+import { logRun } from "./src/runLog.js";
 
 const TRACKED_STOCKS = {
   "Stanbic Bank": "SBIC",
@@ -21,8 +22,6 @@ const STOCK_BANDS = {
 };
 const DEFAULT_BAND = 1.5;
 
-// The most recent trading day before a given date — skips the weekend when
-// that date is a Monday. Same logic as reconcile-yesterday-close.mjs.
 function previousTradingDay(fromDateStr) {
   const d = new Date(fromDateStr);
   d.setDate(d.getDate() - 1);
@@ -36,12 +35,6 @@ function safeName(name) {
   return name.replace(/\s+/g, "_");
 }
 
-// KNOWN LIMITATION: Soko Play's detail page (as scraped today) only gives
-// us LTP (last traded price), not a full OHLCV bar. Using close for
-// open/high/low is a degraded fallback — it will flatten ATR and similar
-// range-based features to zero. Good next step: check whether the site's
-// chart data exposes real intraday high/low so this can be improved
-// without waiting on myStocks being unblocked.
 async function updateOfficialCloseInDataset(supabase, name, closePrice, today) {
   const key = `iq_stock_${safeName(name)}`;
   const { data: existing } = await supabase.from("kv").select("value").eq("key", key).maybeSingle();
@@ -73,18 +66,13 @@ async function archiveClose(supabase, name, ticker, closePrice, today) {
   });
 }
 
-// Finds which of today's intraday checkpoints best supports the day's
-// prediction, and whether it actually cleared the deadband. This is a
-// SEPARATE, softer self-scoring signal — never touches the training
-// dataset (see updateOfficialCloseInDataset above, which only ever uses
-// the real close).
 async function reconcileIntradayMatch(supabase, ticker, today) {
   const predictionDate = previousTradingDay(today);
   const { data: prediction } = await supabase
     .from("predictions")
     .select("action, price, stock_name")
     .eq("ticker", ticker)
-    .eq("date", predictionDate) // yesterday's prediction, being confirmed/refuted by TODAY's price action
+    .eq("date", predictionDate)
     .maybeSingle();
 
   if (!prediction || prediction.action === "HOLD") {
@@ -139,24 +127,48 @@ async function main() {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const today = new Date().toISOString().slice(0, 10);
 
-  const { browser, page } = await launchSession({ headless: true });
+  const { browser, context } = await launchSession({ headless: true });
   try {
     for (const [name, ticker] of Object.entries(TRACKED_STOCKS)) {
+      const page = await context.newPage();
       try {
         const { price } = await readStockPrice(page, searchTermFor(name));
         const rowCount = await updateOfficialCloseInDataset(supabase, name, price, today);
         await archiveClose(supabase, name, ticker, price, today);
         console.log(`[eod] ${ticker}: close=${price}, dataset now has ${rowCount} rows`);
+        await logRun(supabase, { runType: "eod", ticker, status: "success", price, message: `Dataset now has ${rowCount} rows` });
 
         const reconciliation = await reconcileIntradayMatch(supabase, ticker, today);
         console.log(`[eod] ${ticker} intraday reconciliation:`, JSON.stringify(reconciliation));
       } catch (err) {
         console.error(`[eod] Failed for ${name} (${ticker}):`, err.message);
+        await logRun(supabase, { runType: "eod", ticker, status: "failed", message: err.message });
+      } finally {
+        await page.close();
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
   } finally {
     await browser.close();
+  }
+
+  const { VERCEL_APP_URL, CRON_SECRET } = process.env;
+  if (VERCEL_APP_URL && CRON_SECRET) {
+    try {
+      console.log(`[eod] Triggering ${VERCEL_APP_URL}/api/nse/fetch ...`);
+      const res = await fetch(`${VERCEL_APP_URL}/api/nse/fetch`, {
+        headers: { Authorization: `Bearer ${CRON_SECRET}` },
+      });
+      const body = await res.json();
+      console.log(`[eod] Pipeline trigger response (HTTP ${res.status}):`, JSON.stringify(body));
+    } catch (err) {
+      console.error("[eod] Failed to trigger the Vercel pipeline:", err.message);
+    }
+  } else {
+    console.warn(
+      "[eod] VERCEL_APP_URL or CRON_SECRET not set in .env — skipping pipeline trigger. " +
+        "Add both to actually close the loop (see bot/README.md)."
+    );
   }
 }
 
