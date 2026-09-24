@@ -40,6 +40,7 @@ import { getAccountSnapshot } from "./portfolio.js";
 import { trustToThresholdAdjustment } from "./regretEngine.js";
 import { searchTermFor } from "./stockNameMap.js";
 import { logRun } from "./runLog.js";
+import { createClient as _unused } from "@supabase/supabase-js"; // placeholder, ignore
 
 const MAX_TRADES_PER_DAY = process.env.MAX_TRADES_PER_DAY
   ? Number(process.env.MAX_TRADES_PER_DAY)
@@ -142,6 +143,22 @@ function findHoldingForStock(holdings, stockName) {
   );
 }
 
+async function alreadyTradedToday(supabase, ticker, today) {
+  const result = await supabase
+    .from("bot_run_log")
+    .select("id")
+    .eq("run_type", "trade")
+    .eq("ticker", ticker)
+    .eq("status", "success")
+    .gte("ran_at", today + "T00:00:00")
+    .limit(1);
+  if (result.error) {
+    console.warn("[orchestrator] Could not check prior trades - failing safe:", result.error.message);
+    return true;
+  }
+  return (result.data || []).length > 0;
+}
+
 async function run() {
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = assertEnv();
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -196,6 +213,11 @@ async function run() {
 
     for (const signal of capped) {
       try {
+        const already = await alreadyTradedToday(supabase, signal.ticker, today);
+        if (already) {
+          console.log("[orchestrator] Skipping " + signal.ticker + " " + signal.action + " - already traded today.");
+          continue;
+        }
         if (signal.action === "BUY") {
           const { shares, cost } = sizeTrade(signal, availableCash);
           if (cost < MIN_TRADE_VALUE || shares === 0) {
