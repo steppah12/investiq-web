@@ -1,0 +1,11 @@
+node_modules
+.env
+.session
+logs
+debug-*.html
+debug-*.png
+debug-*.json
+debug-*.mjs
+*.before-*
+.backup-*/
+*.save
