@@ -1,17 +1,26 @@
 // @ts-nocheck
 // Scrapes live end-of-day quotes from live.mystocks.co.ke for NSE-listed
-// stocks. The page embeds a small JSON blob in its HTML with the current
-// quote — we pull that out with a regex rather than needing a headless
-// browser (the site is server-rendered, no JS execution required).
+// stocks.
 //
-// Example blob found in the page:
-// {"reload":0,"stamp":1789129511,"track":65742232,"time":"3:25 PM EAT",
-//  "update":0,"klass":"c1","market":"closed",
-//  "data":["94.00","0.25 (0.27%)","94.25","94.00","94.00","95.00","93.50",
-//           "375,298","35.25M","1,275","302.05B","3:25 PM EAT", ...]}
+// CORRECTED 2026-09-24: the site began HTML-entity-encoding the embedded
+// {"reload":...,"data":[...]} JSON blob (&quot; instead of ") sometime
+// around 2026-09-16, breaking the old regex match outright. Worse: even
+// once decoded, the data[] array's positions no longer match what this
+// file's old comment claimed (index 6 is now previous-close, not low;
+// index 7 is some other stat, not volume) — confirmed by cross-checking
+// a real page against its own visibly labeled summary box.
 //
-// data[] positions (reverse-engineered from the page's own labeled table):
-//   0 = last/close   5 = high   6 = low   7 = volume
+// Rather than trust another fragile numbered array, this now parses the
+// labeled elements directly from the static "End of Day" summary box that
+// EVERY visitor sees without logging in (confirmed via a real fetch,
+// 2026-09-24): id=rtPrice2 (last/close), id=rtHi (high), id=rtLo (low),
+// id=rtVol (volume), id=rtPrev (previous close), id=rtTime2 (contains the
+// "End of day - <date>" label used for both the trade date and to confirm
+// this is a final close, not a live intraday print).
+//
+// The old JSON blob is still used for ONE thing: its "market" field
+// ("open"/"closed"), since that's the one signal not duplicated anywhere
+// in the static box. It still needs entity-decoding to read.
 
 const MYSTOCKS_BASE = 'https://live.mystocks.co.ke/stock='
 
@@ -22,9 +31,9 @@ export interface ScrapedQuote {
   high: number
   low: number
   volume: number
-  open: number // not reliably available from this blob — set equal to close
+  open: number // not reliably available on this page — set equal to close
   marketStatus: string // "closed" = final EOD price, anything else = live/partial
-  raw: string // original matched JSON blob, kept for debugging
+  raw: string // the relevant HTML snippet, kept for debugging
 }
 
 function parseNumber(s: string | undefined): number {
@@ -43,20 +52,38 @@ function extractTradeDate(html: string): string {
       return d.toISOString().split('T')[0]
     }
   }
-  // Fallback: "today" in EAT (UTC+3)
   const now = new Date(Date.now() + 3 * 60 * 60 * 1000)
   return now.toISOString().split('T')[0]
 }
 
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+}
+
+function extractMarketStatus(html: string): string {
+  const blobMatch = html.match(/id=rtDataJson[^>]*>(\{.*?\})<\/div>/s)
+  if (!blobMatch) return 'unknown'
+  const decoded = decodeHtmlEntities(blobMatch[1])
+  const marketMatch = decoded.match(/"market":"([^"]*)"/)
+  return marketMatch ? marketMatch[1] : 'unknown'
+}
+
+function extractById(html: string, id: string): string | undefined {
+  // Matches id=rtHi>60.00</b> or id="rtHi">60.00</b> — the page uses
+  // unquoted attributes throughout, so allow both forms.
+  const m = html.match(new RegExp('id=["\']?' + id + '["\']?>([^<]*)<'))
+  return m ? m[1].trim() : undefined
+}
+
 export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote> {
-  const url = `${MYSTOCKS_BASE}${encodeURIComponent(ticker)}`
+  const url = MYSTOCKS_BASE + encodeURIComponent(ticker)
   const res = await fetch(url, {
     headers: {
-      // A bare User-Agent with nothing else is itself a common automated-
-      // request signal. Confirmed via real diagnostic: this exact URL
-      // returns HTML that's missing the quote blob entirely when fetched
-      // with just a User-Agent — sending a fuller, more realistic set of
-      // headers a genuine browser would include.
       'User-Agent':
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -67,56 +94,43 @@ export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote>
       'Sec-Fetch-Mode': 'navigate',
       'Sec-Fetch-Site': 'same-origin',
     },
-    // Always hit origin fresh — this is a daily cron job, not a page the
-    // user is browsing, so there's nothing to cache.
     cache: 'no-store',
   })
 
   if (!res.ok) {
-    throw new Error(`myStocks fetch failed for ${ticker}: HTTP ${res.status}`)
+    throw new Error('myStocks fetch failed for ' + ticker + ': HTTP ' + res.status)
   }
 
   const html = await res.text()
 
-  const blobMatch = html.match(/\{"reload":\d+,"stamp":\d+,"track":\d+,"time":"[^"]*","update":\d+,"klass":"[^"]*","market":"[^"]*","data":\[[^\]]*\]\}/)
-  if (!blobMatch) {
-    // Show the raw bytes right around wherever "reload" actually appears
-    // (if at all) — this is far more useful than the page's first 500
-    // chars, since it shows exactly how quotes/braces are really encoded
-    // in this response (e.g. &quot; instead of ", if the JSON is embedded
-    // as an HTML attribute value rather than inline script text).
-    const reloadIdx = html.indexOf('"reload"')
-    const altReloadIdx = reloadIdx === -1 ? html.indexOf('reload') : reloadIdx
-    const contextSnippet =
-      altReloadIdx === -1
-        ? '(the string "reload" does not appear anywhere in the response at all)'
-        : html.slice(Math.max(0, altReloadIdx - 100), altReloadIdx + 400).replace(/\s+/g, ' ')
+  const closeStr = extractById(html, 'rtPrice2')
+  const highStr = extractById(html, 'rtHi')
+  const lowStr = extractById(html, 'rtLo')
+  const volStr = extractById(html, 'rtVol')
 
+  if (!closeStr || !highStr || !lowStr || !volStr) {
+    const missing = [
+      !closeStr && 'rtPrice2 (close)',
+      !highStr && 'rtHi (high)',
+      !lowStr && 'rtLo (low)',
+      !volStr && 'rtVol (volume)',
+    ].filter(Boolean).join(', ')
+    const nameIdx = html.indexOf('id=stkName')
+    const context = nameIdx === -1 ? '(id=stkName not found either — page structure may have changed again)' : html.slice(nameIdx, nameIdx + 400)
     throw new Error(
-      `myStocks: quote blob not found for ${ticker}. HTTP ${res.status}, response length ${html.length} chars. ` +
-        `Context around "reload": ${contextSnippet}`
+      'myStocks: could not find expected field(s) for ' + ticker + ': ' + missing + '. HTTP ' + res.status + ', response length ' + html.length + ' chars. Context: ' + context
     )
   }
 
-  let blob: any
-  try {
-    blob = JSON.parse(blobMatch[0])
-  } catch (e) {
-    throw new Error(`myStocks: failed to parse quote blob for ${ticker}: ${e}`)
-  }
-
-  const d: string[] = blob.data
-  if (!Array.isArray(d) || d.length < 8) {
-    throw new Error(`myStocks: unexpected data shape for ${ticker}`)
-  }
-
-  const close = parseNumber(d[0])
-  const high = parseNumber(d[5])
-  const low = parseNumber(d[6])
-  const volume = parseNumber(d[7])
+  const close = parseNumber(closeStr)
+  const high = parseNumber(highStr)
+  const low = parseNumber(lowStr)
+  const volume = parseNumber(volStr)
 
   if ([close, high, low, volume].some((n) => isNaN(n))) {
-    throw new Error(`myStocks: could not parse numeric fields for ${ticker} (raw: ${blobMatch[0]})`)
+    throw new Error(
+      'myStocks: could not parse numeric fields for ' + ticker + ' (raw: close="' + closeStr + '" high="' + highStr + '" low="' + lowStr + '" vol="' + volStr + '")'
+    )
   }
 
   return {
@@ -126,8 +140,8 @@ export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote>
     high,
     low,
     volume,
-    open: close, // no reliable open in this blob — see note above
-    marketStatus: blob.market || 'unknown',
-    raw: blobMatch[0],
+    open: close, // no reliable separate "open" field on this page
+    marketStatus: extractMarketStatus(html),
+    raw: 'close=' + closeStr + ' high=' + highStr + ' low=' + lowStr + ' vol=' + volStr,
   }
 }
