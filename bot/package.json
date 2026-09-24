@@ -1,0 +1,19 @@
+{
+  "name": "investiq-trading-bot",
+  "version": "1.0.0",
+  "description": "Auto-login + auto-trade + regret-based self-correction for InvestIQ on NSE Soko Play",
+  "type": "module",
+  "main": "src/orchestrator.js",
+  "scripts": {
+    "install-browser": "playwright install chromium",
+    "login": "node src/session.js",
+    "trade": "node src/orchestrator.js",
+    "regret": "node src/regretEngine.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.63.0"
+  }
+}

@@ -49,12 +49,14 @@ async function findVisibleLabel(page, regex) {
 }
 
 async function readCashBalance(page) {
-  const label = await findVisibleLabel(page, /^current\s*balance$/i);
-  const card = label.locator("xpath=ancestor::*[position()<=3]").last();
+  let label = await findVisibleLabel(page, /^current\s*balance$/i);
+  let card = label.locator("xpath=ancestor::*[position()<=3]").last();
 
   const deadline = Date.now() + 30000;
   let lastValue = null;
   let attempt = 0;
+  let reloaded = false;
+
   while (Date.now() < deadline) {
     attempt++;
     const text = await card.innerText().catch(() => "");
@@ -64,13 +66,27 @@ async function readCashBalance(page) {
     if (value != null && value > 0 && value === lastValue) {
       return value;
     }
+
+    // Stuck at 0/null for 10s straight with no reload attempted yet —
+    // force a fresh dashboard navigation once, in case the balance API
+    // call that should have fired never actually did.
+    if (!reloaded && attempt >= 14 && (value === 0 || value == null)) {
+      console.log("[portfolio]   still 0 after ~10s — reloading dashboard once to retry.");
+      reloaded = true;
+      await page.goto("https://academy.nse.co.ke/trader/dashboard", { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(1000);
+      label = await findVisibleLabel(page, /^current\s*balance$/i);
+      card = label.locator("xpath=ancestor::*[position()<=3]").last();
+    }
+
     lastValue = value;
     await page.waitForTimeout(700);
   }
 
   const fs = await import("fs");
   fs.writeFileSync("./debug-balance-stuck.txt", await card.innerText().catch(() => "<could not read>"));
-  throw new Error("Current Balance never stabilized on a non-zero value within 15s (last read: " + lastValue + ") — see debug-balance-stuck.txt.");
+  await page.screenshot({ path: "./debug-balance-stuck.png", fullPage: true }).catch(() => {});
+  throw new Error("Current Balance never stabilized on a non-zero value within 30s, even after one reload (last read: " + lastValue + ") — see debug-balance-stuck.txt/.png.");
 }
 
 async function readHoldings(page) {
