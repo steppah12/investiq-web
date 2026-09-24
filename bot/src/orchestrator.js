@@ -40,7 +40,6 @@ import { getAccountSnapshot } from "./portfolio.js";
 import { trustToThresholdAdjustment } from "./regretEngine.js";
 import { searchTermFor } from "./stockNameMap.js";
 import { logRun } from "./runLog.js";
-import { createClient as _unused } from "@supabase/supabase-js"; // placeholder, ignore
 
 const MAX_TRADES_PER_DAY = process.env.MAX_TRADES_PER_DAY
   ? Number(process.env.MAX_TRADES_PER_DAY)
