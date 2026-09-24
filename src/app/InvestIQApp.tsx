@@ -520,6 +520,7 @@
 // P12 Per-stock pipeline order enforced in both parseCSV + splitBulkByStock
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { mirrorSaveToSupabase, mirrorRemoveFromSupabase } from "@/lib/localSync";
+import { supabase } from "@/lib/supabase/client";
 
 const VERSION = "9.5.31";
 const TAX_RATE = 0.15;
@@ -8207,8 +8208,25 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
     setCheckinMsg({type:updated>0?"success":"warn", text: updated>0 ? `✅ Updated ${updated} stock(s) · evaluated yesterday's signals · retrained · new predictions logged.` : `No valid prices entered — enter at least one close price.`});
   };
 
+  const [botRuns,setBotRuns]=useState([]);
+  const [botRunsLoading,setBotRunsLoading]=useState(true);
+  const [botRunsError,setBotRunsError]=useState(null);
+  useEffect(()=>{
+    if(!supabase){setBotRunsError("Supabase not configured");setBotRunsLoading(false);return;}
+    let cancelled=false;
+    const load=async()=>{
+      const {data,error}=await supabase.from("bot_run_log").select("id,run_type,ticker,ran_at,status,price,message").order("ran_at",{ascending:false}).limit(200);
+      if(cancelled)return;
+      if(error){setBotRunsError(error.message);}else{setBotRunsError(null);setBotRuns(data||[]);}
+      setBotRunsLoading(false);
+    };
+    load();
+    const interval=setInterval(load,30000);
+    return()=>{cancelled=true;clearInterval(interval);};
+  },[]);
+
   // ── Section nav ────────────────────────────────────────────────────────────
-  const sections = [["watchlist","📡 Watchlist"],["feed","📥 Data Feed"],["checkin","📝 Daily Check-In"],["journal","📓 Signal Journal"],["scoreboard","🏆 Scoreboard"],["weekly","📆 Weekly Accuracy"],["paper","💰 Paper Portfolio"],["retrain","🔄 Retrain"],["health","🩺 Data Health"]];
+  const sections = [["watchlist","📡 Watchlist"],["feed","📥 Data Feed"],["checkin","📝 Daily Check-In"],["journal","📓 Signal Journal"],["scoreboard","🏆 Scoreboard"],["weekly","📆 Weekly Accuracy"],["paper","💰 Paper Portfolio"],["retrain","🔄 Retrain"],["health","🩺 Data Health"],["runs","🤖 Bot Runs"]];
   const S = (k)=>({padding:"6px 12px",borderRadius:6,border:`1px solid ${section===k?"#3b82f6":"#1f2937"}`,background:section===k?"#1e3a5f":"#0f172a",color:section===k?"#93c5fd":"#6b7280",cursor:"pointer",fontSize:11,fontWeight:section===k?700:400,whiteSpace:"nowrap"});
 
   return (
@@ -8223,6 +8241,48 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
       <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:18,background:"#0a1628",borderRadius:8,padding:4,border:"1px solid #0f1f3d"}}>
         {sections.map(([k,label])=><button key={k} style={S(k)} onClick={()=>setSection(k)}>{label}</button>)}
       </div>
+
+      {/* ── BOT RUNS ────────────────────────────────────────────────────────── */}
+      {section==="runs"&&(
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:"#9ca3af",marginBottom:12}}>🤖 Bot Run Log — automation activity</div>
+          {botRunsError&&<div style={{fontSize:11,color:"#f87171",marginBottom:8}}>Could not load: {botRunsError}</div>}
+          {botRunsLoading&&!botRuns.length&&<div style={{fontSize:12,color:"#6b7280"}}>Loading…</div>}
+          {!botRunsLoading&&!botRuns.length&&!botRunsError&&<div style={{fontSize:12,color:"#6b7280"}}>No bot activity logged yet.</div>}
+          {botRuns.length>0&&(
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                <thead>
+                  <tr style={{textAlign:"left",color:"#6b7280",borderBottom:"1px solid #1f2937"}}>
+                    <th style={{padding:"6px 8px"}}>Time</th>
+                    <th style={{padding:"6px 8px"}}>Run</th>
+                    <th style={{padding:"6px 8px"}}>Ticker</th>
+                    <th style={{padding:"6px 8px"}}>Status</th>
+                    <th style={{padding:"6px 8px"}}>Price</th>
+                    <th style={{padding:"6px 8px"}}>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {botRuns.map(r=>(
+                    <tr key={r.id} style={{borderBottom:"1px solid #111827"}}>
+                      <td style={{padding:"6px 8px",color:"#9ca3af",whiteSpace:"nowrap"}}>{new Date(r.ran_at).toLocaleString("en-KE",{weekday:"short",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</td>
+                      <td style={{padding:"6px 8px",color:"#9ca3af"}}>{({hourly:"Hourly Price Check",eod:"EOD Close",reconcile:"Reconcile",trade:"Trade"})[r.run_type]||r.run_type}</td>
+                      <td style={{padding:"6px 8px",color:"#e5e7eb",fontWeight:700}}>{r.ticker||"—"}</td>
+                      <td style={{padding:"6px 8px"}}>
+                        <span style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700,background:r.status==="success"?"#052e13":"#3f0d0d",color:r.status==="success"?"#4ade80":"#f87171"}}>
+                          {r.status==="success"?"✓ Success":"✗ Failed"}
+                        </span>
+                      </td>
+                      <td style={{padding:"6px 8px",color:"#9ca3af"}}>{r.price!=null?r.price:"—"}</td>
+                      <td style={{padding:"6px 8px",color:"#6b7280",maxWidth:320,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.message||""}>{r.message||"—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── WATCHLIST ───────────────────────────────────────────────────────── */}
       {section==="watchlist"&&(
