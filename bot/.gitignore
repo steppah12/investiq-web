@@ -9,3 +9,10 @@ debug-*.mjs
 *.before-*
 .backup-*/
 *.save
+debug-*.html
+debug-*.png
+debug-*.json
+debug-*.mjs
+*.before-*
+.backup-*/
+*.save
