@@ -97,7 +97,13 @@ export async function placeTrade(page, ticker, action, orderParams) {
   await actionButton.click();
 
   console.log('[trade] Clicked ' + ACTIONS[action] + ' for "' + ticker + '". Handing off to order form...');
+
+  const urlMatch = page.url().match(/\/trader\/stock\/(\d+)/);
+  const symbolId = urlMatch ? urlMatch[1] : null;
+  const submittedAfter = Date.now();
+
   await submitOrderForm(page, orderParams);
 
   console.log('[trade] Order for ' + ticker + ' (' + action + ') submitted.');
+  return { symbolId, submittedAfter };
 }

@@ -36,7 +36,7 @@ import { createClient } from "@supabase/supabase-js";
 import "dotenv/config";
 import { launchSession, withSession } from "./session.js";
 import { placeTrade } from "./trade.js";
-import { getAccountSnapshot } from "./portfolio.js";
+import { getAccountSnapshot, verifyTradeFilled, isMarketOpen } from "./portfolio.js";
 import { trustToThresholdAdjustment } from "./regretEngine.js";
 import { searchTermFor } from "./stockNameMap.js";
 import { logRun } from "./runLog.js";
@@ -205,6 +205,25 @@ async function run() {
 
   const { browser, page } = await launchSession({ headless: true });
   try {
+    // Added 2026-09-25 after confirming via a live test that Orders/create
+    // returns {"Message":"Order Placed Successfully"} even during
+    // "Closing Price Publication" (post-close), while the order never
+    // actually appears in matchedorders, pendingorders, or holdings — it
+    // is silently discarded, not queued. Checking real market status
+    // FIRST is the only reliable guard; the create-call's response text
+    // cannot be trusted to mean a trade will actually happen.
+    const marketOpen = await isMarketOpen(page);
+    if (!marketOpen) {
+      console.warn("[orchestrator] Market is not open (Closing Price Publication or similar) — refusing to place any trades this run.");
+      for (const signal of capped) {
+        await logRun(supabase, {
+          runType: "trade", ticker: signal.ticker, status: "failed",
+          message: "Market not open — trade not attempted (Orders/create silently discards orders placed post-close)",
+        });
+      }
+      return;
+    }
+
     const { cashBalance } = await getAccountSnapshot(page);
     console.log("[orchestrator] Starting cash balance: " + cashBalance);
 
@@ -231,21 +250,25 @@ async function run() {
               " (kelly=" + signal.kelly_pct + "%, cost=" + cost + ", remaining after=" + (availableCash - cost) + ")"
           );
 
-          const before = await getAccountSnapshot(page);
-          await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "BUY", { quantity: shares }));
-          const after = await getAccountSnapshot(page);
-          const delta = after.cashBalance - before.cashBalance;
+          const placeResult = await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "BUY", { quantity: shares }));
+          const verified = placeResult && placeResult.symbolId
+            ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "BUY", quantity: shares, submittedAfter: placeResult.submittedAfter })
+            : { filled: false };
 
-          console.log("[orchestrator] " + signal.ticker + " BUY confirmed — cash changed by " + delta.toFixed(2));
-          await logRun(supabase, {
-            runType: "trade",
-            ticker: signal.ticker,
-            status: "success",
-            price: signal.price,
-            message: "BUY " + shares + " shares, cash delta " + delta.toFixed(2),
-          });
-
-          availableCash -= cost;
+          if (verified.filled) {
+            console.log("[orchestrator] " + signal.ticker + " BUY CONFIRMED via matched order " + verified.order.ShortOrderId);
+            await logRun(supabase, {
+              runType: "trade", ticker: signal.ticker, status: "success", price: signal.price,
+              message: "BUY " + shares + " shares, confirmed via order " + verified.order.ShortOrderId,
+            });
+            availableCash -= cost;
+          } else {
+            console.warn("[orchestrator] " + signal.ticker + " BUY submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            await logRun(supabase, {
+              runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
+              message: "BUY " + shares + " shares submitted, no matching order found within 60s",
+            });
+          }
         } else {
           const snapshot = await getAccountSnapshot(page);
           const position = findHoldingForStock(snapshot.holdings, signal.stock_name);
@@ -263,19 +286,24 @@ async function run() {
 
           console.log("[orchestrator] " + signal.ticker + " SELL: " + position.shares + " shares (full position).");
 
-          const before = await getAccountSnapshot(page);
-          await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "SELL", { quantity: position.shares }));
-          const after = await getAccountSnapshot(page);
-          const delta = after.cashBalance - before.cashBalance;
+          const placeResult = await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "SELL", { quantity: position.shares }));
+          const verified = placeResult && placeResult.symbolId
+            ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "SELL", quantity: position.shares, submittedAfter: placeResult.submittedAfter })
+            : { filled: false };
 
-          console.log("[orchestrator] " + signal.ticker + " SELL confirmed — cash changed by " + delta.toFixed(2));
-          await logRun(supabase, {
-            runType: "trade",
-            ticker: signal.ticker,
-            status: "success",
-            price: signal.price,
-            message: "SELL " + position.shares + " shares, cash delta " + delta.toFixed(2),
-          });
+          if (verified.filled) {
+            console.log("[orchestrator] " + signal.ticker + " SELL CONFIRMED via matched order " + verified.order.ShortOrderId);
+            await logRun(supabase, {
+              runType: "trade", ticker: signal.ticker, status: "success", price: signal.price,
+              message: "SELL " + position.shares + " shares, confirmed via order " + verified.order.ShortOrderId,
+            });
+          } else {
+            console.warn("[orchestrator] " + signal.ticker + " SELL submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            await logRun(supabase, {
+              runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
+              message: "SELL " + position.shares + " shares submitted, no matching order found within 60s",
+            });
+          }
         }
       } catch (err) {
         console.error("[orchestrator] Failed to execute " + signal.action + " for " + signal.ticker + ":", err.message);

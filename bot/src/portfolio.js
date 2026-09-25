@@ -126,3 +126,78 @@ async function readHoldings(page) {
   console.log("[portfolio] Parsed " + holdings.length + " holding row(s) from " + rowCount + " total row(s) — see debug-portfolio.html if this looks wrong.");
   return holdings;
 }
+
+// Ground-truth trade verification, added 2026-09-25 after confirming
+// Orders/create returning {"Message":"Order Placed Successfully"} does
+// NOT mean the trade actually happened — a real BUY logged "success" via
+// that response alone showed zero balance/holdings change the next day.
+// This checks the exchange's own matched-orders record instead of
+// trusting the create-call's response text. Uses page.request (Playwright's
+// own request context, shares session cookies) rather than page.evaluate's
+// fetch, since the latter hit a CORS-style "Failed to fetch" when tried
+// from inside page JS.
+export async function verifyTradeFilled(page, { symbolId, side, quantity, submittedAfter }) {
+  const deadline = Date.now() + 60000;
+  let attempt = 0;
+
+  // The app attaches its JWT manually per-request from localStorage —
+  // Playwright's page.request only auto-carries cookies, not this token,
+  // which is why a bare page.request.post got 401 even inside an
+  // authenticated session (confirmed 2026-09-25 via a live diagnostic).
+  const token = await page.evaluate(() => localStorage.getItem("token"));
+
+  while (Date.now() < deadline) {
+    attempt++;
+    try {
+      const res = await page.request.post(
+        "https://trading.agilebiz.co.ke/api/Orders/matchedorders",
+        {
+          data: { CompetitionId: "e961e975-215f-4971-92d5-57523e7a36f2" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": token ? "Bearer " + token : "",
+          },
+        }
+      );
+      if (res.status() === 401) {
+        console.warn("[portfolio]   verify poll #" + attempt + ": got 401 even with token — session may have rotated mid-poll.");
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
+      const orders = await res.json();
+
+      const match = (orders || []).find((o) => {
+        if (String(o.SymbolId) !== String(symbolId)) return false;
+        if (Math.abs(Number(o.Quantity) - quantity) > 0.001) return false;
+        const wantSide = side === "BUY" ? "Buy" : "Sell";
+        if (o.OrderSide !== wantSide) return false;
+        const orderTime = new Date(o.OrderDate).getTime();
+        return orderTime >= submittedAfter - 5000; // small clock-skew allowance
+      });
+
+      console.log("[portfolio]   verify poll #" + attempt + ": " + (match ? "FOUND matched order " + match.ShortOrderId : "not found yet"));
+      if (match) return { filled: true, order: match };
+    } catch (err) {
+      console.warn("[portfolio]   verify poll #" + attempt + " request failed:", err.message);
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  return { filled: false, order: null };
+}
+
+// Real, honest market-open check — added 2026-09-25 as the fix for
+// orders being silently discarded when submitted during "Closing Price
+// Publication." Unlike Orders/create's response text, this endpoint was
+// confirmed accurate in a live test (returned IsMarketOpen:false exactly
+// when a just-placed order turned out to have vanished).
+export async function isMarketOpen(page) {
+  const token = await page.evaluate(() => localStorage.getItem("token"));
+  const res = await page.request.get(
+    "https://trading.agilebiz.co.ke/api/Symbols/market-status",
+    { headers: { "Authorization": "Bearer " + token } }
+  );
+  const data = await res.json();
+  console.log("[portfolio] Market status check:", JSON.stringify(data));
+  return data.IsMarketOpen === true;
+}
