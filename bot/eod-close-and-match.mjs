@@ -133,10 +133,15 @@ async function main() {
       const page = await context.newPage();
       try {
         const { price } = await readStockPrice(page, searchTermFor(name));
-        const rowCount = await updateOfficialCloseInDataset(supabase, name, price, today);
+        // CHANGED 2026-09-27: no longer writes into iq_stock_<name> (the
+        // shared training dataset). myStocks (main app's nseSync.ts) is
+        // now the single source of truth for training data — this and
+        // Soko Play exist to trade and to cross-check, not to compete
+        // for the same dataset. Still archived here for Soko Play's own
+        // audit trail and intraday reconciliation matching below.
         await archiveClose(supabase, name, ticker, price, today);
-        console.log(`[eod] ${ticker}: close=${price}, dataset now has ${rowCount} rows`);
-        await logRun(supabase, { runType: "eod", ticker, status: "success", price, message: `Dataset now has ${rowCount} rows` });
+        console.log(`[eod] ${ticker}: close=${price} (archived; training dataset owned by myStocks)`);
+        await logRun(supabase, { runType: "eod", ticker, status: "success", price, message: "Archived (not written to training dataset — myStocks owns that)" });
 
         const reconciliation = await reconcileIntradayMatch(supabase, ticker, today);
         console.log(`[eod] ${ticker} intraday reconciliation:`, JSON.stringify(reconciliation));
