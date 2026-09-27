@@ -8205,6 +8205,20 @@ function LiveLabTab({stocks, stockDataMap, setStockDataMap, log, onStocksChanged
         }
       }
     }
+    // FIX 2026-09-27: checkinPrices previously never reset after a
+    // successful check-in, so the input boxes kept showing whatever text
+    // was typed days ago instead of starting blank the next day — while
+    // the adjacent "prev: ..." label (fed from the real dataset) always
+    // showed the correct latest price, making the mismatch confusing.
+    if(updated>0){
+      setCheckinPrices(p=>{
+        const cleared = {...p};
+        for(const name of LAB_STOCKS){
+          if(cleared[name] && !isNaN(parseFloat(cleared[name]))) cleared[name] = "";
+        }
+        return cleared;
+      });
+    }
     setCheckinMsg({type:updated>0?"success":"warn", text: updated>0 ? `✅ Updated ${updated} stock(s) · evaluated yesterday's signals · retrained · new predictions logged.` : `No valid prices entered — enter at least one close price.`});
   };
 
