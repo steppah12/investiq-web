@@ -67,27 +67,11 @@ async function main() {
           continue;
         }
 
+        // CHANGED 2026-09-27: this used to overwrite iq_stock_<name> (the shared training dataset) whenever Soko Play's PREV CLOSE disagreed with what was captured. myStocks is now trusted directly; this just LOGS the mismatch without touching the dataset.
         console.warn(
-          `[reconcile] ${ticker}: MISMATCH — captured ${capturedClose}, official PREV CLOSE is ${prevClose}. Correcting.`
+          `[reconcile] ${ticker}: mismatch noted (captured ${capturedClose} vs Soko Play PREV CLOSE ${prevClose}) — NOT correcting the training dataset (myStocks owns that now).`
         );
-        rows[idx] = { ...rows[idx], open: prevClose, high: prevClose, low: prevClose, close: prevClose };
-        const { error } = await supabase.from("kv").upsert({ key, value: rows, updated_at: new Date().toISOString() });
-        if (error) throw error;
-
-        await supabase.from("daily_price_archive").insert({
-          stock_name: name,
-          ticker,
-          trade_date: yesterday,
-          open: prevClose,
-          high: prevClose,
-          low: prevClose,
-          close: prevClose,
-          volume: null,
-          market_status: "closed",
-          raw_blob: { source: "soko_play_bot_reconciliation", correctedFrom: capturedClose },
-        });
-
-        await logRun(supabase, { runType: "reconcile", ticker, status: "success", price: prevClose, message: `Corrected from ${capturedClose} to ${prevClose}` });
+        await logRun(supabase, { runType: "reconcile", ticker, status: "success", price: prevClose, message: `Mismatch noted only (captured ${capturedClose} vs ${prevClose}) — dataset not touched, myStocks is the source of truth` });
       } catch (err) {
         console.error(`[reconcile] Failed for ${name} (${ticker}):`, err.message);
         await logRun(supabase, { runType: "reconcile", ticker, status: "failed", message: err.message });
