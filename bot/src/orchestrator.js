@@ -225,9 +225,16 @@ async function run() {
     }
 
     const { cashBalance } = await getAccountSnapshot(page);
-    console.log("[orchestrator] Starting cash balance: " + cashBalance);
+    console.log("[orchestrator] Real cash balance: " + cashBalance);
 
-    let availableCash = cashBalance;
+    // Added 2026-09-27: real balance has grown past 200k from earlier
+    // testing trades — deploying all of it against a single day's Kelly-
+    // sized signals risks overcommitting before the model has proven
+    // itself. Capped, adjustable via env so it can be raised later
+    // without another code change.
+    const MAX_DEPLOYABLE_CASH = Number(process.env.MAX_DEPLOYABLE_CASH ?? 100000);
+    let availableCash = Math.min(cashBalance, MAX_DEPLOYABLE_CASH);
+    console.log("[orchestrator] Deployable cash this run (capped at " + MAX_DEPLOYABLE_CASH + "): " + availableCash);
 
     for (const signal of capped) {
       try {
