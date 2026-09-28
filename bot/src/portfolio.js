@@ -171,7 +171,7 @@ export async function verifyTradeFilled(page, { symbolId, side, quantity, submit
         if (Math.abs(Number(o.Quantity) - quantity) > 0.001) return false;
         const wantSide = side === "BUY" ? "Buy" : "Sell";
         if (o.OrderSide !== wantSide) return false;
-        const orderTime = new Date(o.OrderDate).getTime();
+        const orderTime = parseServerTime(o.OrderDate);
         return orderTime >= submittedAfter - 5000; // small clock-skew allowance
       });
 
@@ -200,4 +200,12 @@ export async function isMarketOpen(page) {
   const data = await res.json();
   console.log("[portfolio] Market status check:", JSON.stringify(data));
   return data.IsMarketOpen === true;
+}
+
+// Soko Play returns OrderDate as Nairobi wall-clock time with no timezone marker.
+// Parse it as UTC+3 explicitly so matching does not depend on the machine's timezone.
+function parseServerTime(s) {
+  const raw = String(s).replace(/(\.\d{3})\d+/, "$1");
+  const hasTz = /(Z|[+-]\d{2}:\d{2})$/i.test(raw);
+  return new Date(hasTz ? raw : raw + "+03:00").getTime();
 }

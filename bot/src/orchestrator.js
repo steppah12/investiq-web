@@ -56,6 +56,36 @@ function assertEnv() {
   return { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY };
 }
 
+function previousWeekday(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  do { d.setUTCDate(d.getUTCDate() - 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return d.toISOString().slice(0, 10);
+}
+
+// Signals are generated after the close for the NEXT session, so the trading run happens
+// the following morning while the market is open. Use the latest prediction date strictly
+// before today, and refuse it unless it is dated the previous weekday, so a failed overnight pipeline can never cause stale signals to be traded.
+async function fetchLatestRawSignals(supabase, today) {
+  const { data: latest, error: e1 } = await supabase
+    .from("predictions").select("date").lt("date", today)
+    .order("date", { ascending: false }).limit(1);
+  if (e1) throw e1;
+  if (!latest || latest.length === 0) return [];
+  const signalDate = latest[0].date;
+  const expected = previousWeekday(today);
+  if (signalDate !== expected) {
+    console.warn("[orchestrator] Latest predictions are dated " + signalDate + " but the previous trading day is " + expected + " - refusing to trade stale signals.");
+    return [];
+  }
+  console.log("[orchestrator] Trading predictions dated " + signalDate + " on " + today + ".");
+  const { data, error } = await supabase
+    .from("predictions")
+    .select("ticker, stock_name, date, price, action, confidence, kelly_pct")
+    .eq("date", signalDate);
+  if (error) throw error;
+  return data ?? [];
+}
+
 async function fetchTodaysRawSignals(supabase, today) {
   const { data, error } = await supabase
     .from("predictions")
@@ -163,7 +193,7 @@ async function run() {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const today = new Date().toISOString().slice(0, 10);
-  const rawSignals = await fetchTodaysRawSignals(supabase, today);
+  const rawSignals = await fetchLatestRawSignals(supabase, today);
   const signals = await filterByActiveRoster(supabase, rawSignals);
   console.log(
     "[orchestrator] " + rawSignals.length + " raw signal(s) for " + today +
