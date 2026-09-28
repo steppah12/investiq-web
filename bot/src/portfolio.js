@@ -20,7 +20,9 @@ export async function getAccountSnapshot(page) {
   const cashBalance = await readCashBalance(page);
   const holdings = await readHoldings(page).catch((err) => {
     console.warn("[portfolio] Could not read holdings (non-fatal):", err.message);
-    return [];
+    const failed = [];
+    failed.readFailed = true; // a failed read is NOT the same as an empty portfolio
+    return failed;
   });
 
   console.log("[portfolio] cashBalance=" + cashBalance + ", holdings=" + holdings.length + " position(s)");
@@ -89,7 +91,7 @@ async function readCashBalance(page) {
   throw new Error("Current Balance never stabilized on a non-zero value within 30s, even after one reload (last read: " + lastValue + ") — see debug-balance-stuck.txt/.png.");
 }
 
-async function readHoldings(page) {
+async function readHoldingsFromDom(page) {
   await page.goto("https://academy.nse.co.ke/trader/dashboard", { waitUntil: "domcontentloaded" });
 
   const viewAllLink = await findVisibleLabel(page, /view\s+all\s+your\s+holdings/i);
@@ -208,4 +210,23 @@ function parseServerTime(s) {
   const raw = String(s).replace(/(\.\d{3})\d+/, "$1");
   const hasTz = /(Z|[+-]\d{2}:\d{2})$/i.test(raw);
   return new Date(hasTz ? raw : raw + "+03:00").getTime();
+}
+
+// Holdings straight from the API the portfolio page itself calls. The old DOM read raced the
+// table's data load and often saw the "No results found" placeholder for a non-empty account.
+async function readHoldings(page) {
+  const token = await page.evaluate(() => localStorage.getItem("token"));
+  const comp = (await page.evaluate(() => localStorage.getItem("defaultCompetition"))) || "e961e975-215f-4971-92d5-57523e7a36f2";
+  const url = "https://trading.agilebiz.co.ke/api/Competitions/get-my-portfolio-holdings/" + comp;
+  const headers = { "Content-Type": "application/json", Authorization: "Bearer " + token };
+  let res = await page.request.get(url, { headers });
+  if (res.status() === 405) res = await page.request.post(url, { headers, data: {} });
+  if (!res.ok()) throw new Error("holdings API returned HTTP " + res.status());
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error("holdings API returned a non-array response");
+  const holdings = data
+    .map((h) => ({ name: String(h.StockName || "").trim(), shares: Number(h.Quantity) }))
+    .filter((h) => h.name && Number.isFinite(h.shares) && h.shares > 0);
+  console.log("[portfolio] Holdings via API: " + holdings.length + " position(s)");
+  return holdings;
 }

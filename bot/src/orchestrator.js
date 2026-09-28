@@ -308,6 +308,11 @@ async function run() {
           }
         } else {
           const snapshot = await getAccountSnapshot(page);
+          if (snapshot.holdings.readFailed) {
+            console.warn("[orchestrator] " + signal.ticker + " SELL not attempted - holdings could not be read (that is not the same as holding nothing).");
+            await logRun(supabase, { runType: "trade", ticker: signal.ticker, status: "failed", message: "SELL not attempted: holdings read failed" });
+            continue;
+          }
           const position = findHoldingForStock(snapshot.holdings, signal.stock_name);
 
           if (!position || position.shares === 0) {
