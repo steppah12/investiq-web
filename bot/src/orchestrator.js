@@ -75,6 +75,7 @@ async function fetchLatestRawSignals(supabase, today) {
   const expected = previousWeekday(today);
   if (signalDate !== expected) {
     console.warn("[orchestrator] Latest predictions are dated " + signalDate + " but the previous trading day is " + expected + " - refusing to trade stale signals.");
+    await logRun(supabase, { runType: "trade", ticker: null, status: "failed", message: "Refused: latest predictions dated " + signalDate + ", expected " + expected });
     return [];
   }
   console.log("[orchestrator] Trading predictions dated " + signalDate + " on " + today + ".");
