@@ -62,29 +62,47 @@ function previousWeekday(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-// Signals are generated after the close for the NEXT session, so the trading run happens
-// the following morning while the market is open. Use the latest prediction date strictly
-// before today, and refuse it unless it is dated the previous weekday, so a failed overnight pipeline can never cause stale signals to be traded.
+// CHANGED 2026-09-30: myStocks does not refresh every ticker's "End of day"
+// date at the same time - confirmed over three separate trading days that
+// SBIC updates same-evening while COOP/KNRE/GLD/BERG(CRWN) consistently lag
+// a full day, likely because they are thin/low-volume counters whose close
+// settles later. A single latest-date-wins check meant one lagging ticker
+// could block the whole run. This now checks freshness PER TICKER: each
+// ticker trades only on a signal dated exactly the previous weekday;
+// anything older is skipped individually and logged, not treated as an
+// all-or-nothing gate.
 async function fetchLatestRawSignals(supabase, today) {
-  const { data: latest, error: e1 } = await supabase
-    .from("predictions").select("date").lt("date", today)
-    .order("date", { ascending: false }).limit(1);
-  if (e1) throw e1;
-  if (!latest || latest.length === 0) return [];
-  const signalDate = latest[0].date;
   const expected = previousWeekday(today);
-  if (signalDate !== expected) {
-    console.warn("[orchestrator] Latest predictions are dated " + signalDate + " but the previous trading day is " + expected + " - refusing to trade stale signals.");
-    await logRun(supabase, { runType: "trade", ticker: null, status: "failed", message: "Refused: latest predictions dated " + signalDate + ", expected " + expected });
-    return [];
-  }
-  console.log("[orchestrator] Trading predictions dated " + signalDate + " on " + today + ".");
+  const lookback = new Date(new Date(today + "T00:00:00Z").getTime() - 7 * 86400000).toISOString().slice(0, 10);
+
   const { data, error } = await supabase
     .from("predictions")
     .select("ticker, stock_name, date, price, action, confidence, kelly_pct")
-    .eq("date", signalDate);
+    .gte("date", lookback).lt("date", today)
+    .order("date", { ascending: false });
   if (error) throw error;
-  return data ?? [];
+
+  const latestByTicker = new Map();
+  for (const row of data ?? []) {
+    if (!latestByTicker.has(row.ticker)) latestByTicker.set(row.ticker, row);
+  }
+
+  const fresh = [];
+  for (const [ticker, row] of latestByTicker) {
+    if (row.date === expected) {
+      fresh.push(row);
+    } else {
+      console.warn("[orchestrator] " + ticker + ": latest prediction dated " + row.date + ", expected " + expected + " - skipping (stale for this ticker only).");
+      await logRun(supabase, { runType: "trade", ticker, status: "failed", message: "Skipped: latest prediction dated " + row.date + ", expected " + expected });
+    }
+  }
+
+  if (fresh.length === 0) {
+    console.warn("[orchestrator] No ticker has a fresh (" + expected + ") prediction - nothing to trade today.");
+  } else {
+    console.log("[orchestrator] Trading " + fresh.length + " fresh signal(s) dated " + expected + ": " + fresh.map((r) => r.ticker).join(", "));
+  }
+  return fresh;
 }
 
 async function fetchTodaysRawSignals(supabase, today) {
