@@ -22,7 +22,7 @@ cd "$BOT_DIR"
 find "$LOG_DIR" -name "trade-*.log" -mtime +30 -delete 2>/dev/null || true
 
 echo "===== $(date -Iseconds) — starting trade run =====" >> "$LOG_FILE"
-npm run trade >> "$LOG_FILE" 2>&1
+timeout --kill-after=30s 300s npm run trade >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 echo "===== $(date -Iseconds) — trade run finished (exit $EXIT_CODE) =====" >> "$LOG_FILE"
 exit $EXIT_CODE

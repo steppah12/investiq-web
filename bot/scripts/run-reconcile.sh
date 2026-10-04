@@ -10,7 +10,7 @@ cd "$BOT_DIR"
 find "$LOG_DIR" -name "reconcile-*.log" -mtime +30 -delete 2>/dev/null || true
 
 echo "===== $(date -Iseconds) — morning close reconciliation =====" >> "$LOG_FILE"
-node reconcile-yesterday-close.mjs >> "$LOG_FILE" 2>&1
+timeout --kill-after=30s 240s node reconcile-yesterday-close.mjs >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 echo "===== $(date -Iseconds) — finished (exit $EXIT_CODE) =====" >> "$LOG_FILE"
 exit $EXIT_CODE
