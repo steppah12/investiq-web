@@ -62,17 +62,18 @@ function previousWeekday(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-// CHANGED 2026-09-30: myStocks does not refresh every ticker's "End of day"
-// date at the same time - confirmed over three separate trading days that
-// SBIC updates same-evening while COOP/KNRE/GLD/BERG(CRWN) consistently lag
-// a full day, likely because they are thin/low-volume counters whose close
-// settles later. A single latest-date-wins check meant one lagging ticker
-// could block the whole run. This now checks freshness PER TICKER: each
-// ticker trades only on a signal dated exactly the previous weekday;
-// anything older is skipped individually and logged, not treated as an
-// all-or-nothing gate.
+// CHANGED 2026-10-06: confirmed over two weeks that COOP/KNRE/GLD/BERG(CRWN)
+// are NOT catching up to SBIC - myStocks reliably publishes their official
+// close about one full trading day later than SBIC's (a separate ~17:39 EAT
+// trigger, likely the main app's own Vercel cron, is what eventually
+// produces their close each day). An exact-match guard meant these four
+// tickers failed EVERY day, permanently, not just occasionally. Now accepts
+// a signal dated the previous weekday OR the trading day before that, and
+// logs clearly which tier matched so a one-day-old trade is never silently
+// indistinguishable from same-day fresh.
 async function fetchLatestRawSignals(supabase, today) {
   const expected = previousWeekday(today);
+  const expectedPrior = previousWeekday(expected);
   const lookback = new Date(new Date(today + "T00:00:00Z").getTime() - 7 * 86400000).toISOString().slice(0, 10);
 
   const { data, error } = await supabase
@@ -91,16 +92,19 @@ async function fetchLatestRawSignals(supabase, today) {
   for (const [ticker, row] of latestByTicker) {
     if (row.date === expected) {
       fresh.push(row);
+    } else if (row.date === expectedPrior) {
+      console.warn("[orchestrator] " + ticker + ": using one-day-tolerance signal dated " + row.date + " (expected " + expected + ") - this ticker's close is known to publish a day late.");
+      fresh.push(row);
     } else {
-      console.warn("[orchestrator] " + ticker + ": latest prediction dated " + row.date + ", expected " + expected + " - skipping (stale for this ticker only).");
-      await logRun(supabase, { runType: "trade", ticker, status: "failed", message: "Skipped: latest prediction dated " + row.date + ", expected " + expected });
+      console.warn("[orchestrator] " + ticker + ": latest prediction dated " + row.date + ", expected " + expected + " or " + expectedPrior + " - skipping (stale for this ticker only).");
+      await logRun(supabase, { runType: "trade", ticker, status: "failed", message: "Skipped: latest prediction dated " + row.date + ", expected " + expected + " or " + expectedPrior });
     }
   }
 
   if (fresh.length === 0) {
-    console.warn("[orchestrator] No ticker has a fresh (" + expected + ") prediction - nothing to trade today.");
+    console.warn("[orchestrator] No ticker has a fresh (" + expected + " or " + expectedPrior + ") prediction - nothing to trade today.");
   } else {
-    console.log("[orchestrator] Trading " + fresh.length + " fresh signal(s) dated " + expected + ": " + fresh.map((r) => r.ticker).join(", "));
+    console.log("[orchestrator] Trading " + fresh.length + " fresh signal(s): " + fresh.map((r) => r.ticker + "(" + r.date + ")").join(", "));
   }
   return fresh;
 }
