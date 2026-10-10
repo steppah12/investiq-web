@@ -318,8 +318,8 @@ async function run() {
           if (verified.filled) {
             console.log("[orchestrator] " + signal.ticker + " BUY CONFIRMED via matched order " + verified.order.ShortOrderId);
             await logRun(supabase, {
-              runType: "trade", ticker: signal.ticker, status: "success", price: signal.price,
-              message: "BUY " + shares + " shares, confirmed via order " + verified.order.ShortOrderId,
+              runType: "trade", ticker: signal.ticker, status: "success", price: Number(verified.order.Price) || signal.price,
+              message: "BUY " + shares + " shares, confirmed via order " + verified.order.ShortOrderId + ", signal price " + signal.price,
             });
             availableCash -= cost;
           } else {
@@ -359,8 +359,8 @@ async function run() {
           if (verified.filled) {
             console.log("[orchestrator] " + signal.ticker + " SELL CONFIRMED via matched order " + verified.order.ShortOrderId);
             await logRun(supabase, {
-              runType: "trade", ticker: signal.ticker, status: "success", price: signal.price,
-              message: "SELL " + position.shares + " shares, confirmed via order " + verified.order.ShortOrderId,
+              runType: "trade", ticker: signal.ticker, status: "success", price: Number(verified.order.Price) || signal.price,
+              message: "SELL " + position.shares + " shares, confirmed via order " + verified.order.ShortOrderId + ", signal price " + signal.price,
             });
           } else {
             console.warn("[orchestrator] " + signal.ticker + " SELL submitted but NOT confirmed in matched orders after 60s — will retry next run.");
