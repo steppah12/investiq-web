@@ -78,7 +78,9 @@ async function submitOrderForm(page, opts) {
   await page.waitForTimeout(1500);
 
   const submitButton = page.locator('button:visible').filter({ hasText: /^Submit$/i }).first();
+  const createResp = page.waitForResponse((r) => r.url().includes("Orders/create"), { timeout: 15000 }).catch(() => null);
   await submitButton.click();
+  { const cr = await createResp; console.log("[trade] Orders/create: " + (cr ? "HTTP " + cr.status() + " " + (await cr.text().catch(() => "")).slice(0, 300) : "no response seen within 15s")); await page.waitForTimeout(1500); const msgs = await page.locator("[role=dialog]:visible, [role=alert]:visible, [class*=toast i]:visible").allInnerTexts().catch(() => []); console.log("[trade] After-submit UI text: " + JSON.stringify(msgs.map((m) => m.slice(0, 200)))); }
 
   console.log("[trade] Submit clicked. Check debug-after-submit output to see what happens next.");
 }
