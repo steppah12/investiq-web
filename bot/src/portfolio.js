@@ -204,6 +204,37 @@ export async function isMarketOpen(page) {
   return data.IsMarketOpen === true;
 }
 
+// Added 2026-10-14: when a submitted order is not found in matched orders, log what the
+// exchange actually shows (market status, pending orders, latest matched orders) so a
+// failed day can be diagnosed from the log instead of guessed at.
+export async function snapshotOrderBook(page) {
+  const token = await page.evaluate(() => localStorage.getItem("token"));
+  const comp = (await page.evaluate(() => localStorage.getItem("defaultCompetition"))) || "e961e975-215f-4971-92d5-57523e7a36f2";
+  const headers = { "Content-Type": "application/json", Authorization: "Bearer " + token };
+  const base = "https://trading.agilebiz.co.ke/api/";
+  const fmt = (o) => [o.OrderSide, o.SymbolName, "qty " + o.Quantity, "px " + o.Price, o.OrderStatus || "", String(o.OrderDate || "").slice(5, 19)].filter(Boolean).join(" ");
+  const parts = [];
+  try {
+    const st = await (await page.request.get(base + "Symbols/market-status", { headers })).json();
+    parts.push("market: " + (st.Message || JSON.stringify(st)));
+  } catch (e) {
+    parts.push("market: n/a (" + e.message + ")");
+  }
+  for (const [label, ep, n] of [["pending", "Orders/pendingorders", 5], ["latest matched", "Orders/matchedorders", 3]]) {
+    try {
+      const res = await page.request.post(base + ep, { data: { CompetitionId: comp }, headers });
+      const rows = res.ok() ? await res.json() : [];
+      const list = Array.isArray(rows) ? rows : [];
+      const ordered = label === "pending" ? list : list.slice().sort((a, b) => String(b.OrderDate).localeCompare(String(a.OrderDate)));
+      const shown = ordered.slice(0, n);
+      parts.push(label + " " + list.length + (shown.length ? " [" + shown.map(fmt).join("; ") + "]" : ""));
+    } catch (e) {
+      parts.push(label + ": n/a (" + e.message + ")");
+    }
+  }
+  return parts.join(" | ");
+}
+
 // Soko Play returns OrderDate as Nairobi wall-clock time with no timezone marker.
 // Parse it as UTC+3 explicitly so matching does not depend on the machine's timezone.
 function parseServerTime(s) {

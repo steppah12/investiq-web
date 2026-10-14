@@ -36,7 +36,7 @@ import { createClient } from "@supabase/supabase-js";
 import "dotenv/config";
 import { launchSession, withSession } from "./session.js";
 import { placeTrade } from "./trade.js";
-import { getAccountSnapshot, verifyTradeFilled, isMarketOpen } from "./portfolio.js";
+import { getAccountSnapshot, verifyTradeFilled, isMarketOpen, snapshotOrderBook } from "./portfolio.js";
 import { trustToThresholdAdjustment } from "./regretEngine.js";
 import { searchTermFor } from "./stockNameMap.js";
 import { logRun } from "./runLog.js";
@@ -379,9 +379,11 @@ async function run() {
             await recordFill(supabase, signal, "BUY", shares, verified.order);
           } else {
             console.warn("[orchestrator] " + signal.ticker + " BUY submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            const book = await snapshotOrderBook(page).catch((e) => "order book snapshot failed: " + e.message);
+            console.warn("[orchestrator] Order book after unconfirmed " + signal.ticker + ": " + book);
             await logRun(supabase, {
               runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
-              message: "BUY " + shares + " shares submitted, no matching order found within 60s",
+              message: "BUY " + shares + " shares submitted, no matching order found within 60s | " + book,
             });
             await recordStatus(supabase, signal, "unconfirmed");
           }
@@ -421,9 +423,11 @@ async function run() {
             await recordFill(supabase, signal, "SELL", position.shares, verified.order);
           } else {
             console.warn("[orchestrator] " + signal.ticker + " SELL submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            const book = await snapshotOrderBook(page).catch((e) => "order book snapshot failed: " + e.message);
+            console.warn("[orchestrator] Order book after unconfirmed " + signal.ticker + ": " + book);
             await logRun(supabase, {
               runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
-              message: "SELL " + position.shares + " shares submitted, no matching order found within 60s",
+              message: "SELL " + position.shares + " shares submitted, no matching order found within 60s | " + book,
             });
             await recordStatus(supabase, signal, "unconfirmed");
           }
