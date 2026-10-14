@@ -201,7 +201,7 @@ async function alreadyTradedToday(supabase, ticker, today) {
     .select("id")
     .eq("run_type", "trade")
     .eq("ticker", ticker)
-    .eq("status", "success")
+    .in("status", ["success", "unconfirmed"])
     .gte("ran_at", today + "T00:00:00")
     .limit(1);
   if (result.error) {
@@ -365,9 +365,12 @@ async function run() {
           );
 
           const placeResult = await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "BUY", { quantity: shares }));
-          const verified = placeResult && placeResult.symbolId
-            ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "BUY", quantity: shares, submittedAfter: placeResult.submittedAfter })
-            : { filled: false };
+          const rejected = Boolean(placeResult && placeResult.createStatus >= 400);
+          const verified = rejected
+            ? { filled: false }
+            : placeResult && placeResult.symbolId
+              ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "BUY", quantity: shares, submittedAfter: placeResult.submittedAfter })
+              : { filled: false };
 
           if (verified.filled) {
             console.log("[orchestrator] " + signal.ticker + " BUY CONFIRMED via matched order " + verified.order.ShortOrderId);
@@ -378,14 +381,16 @@ async function run() {
             availableCash -= cost;
             await recordFill(supabase, signal, "BUY", shares, verified.order);
           } else {
-            console.warn("[orchestrator] " + signal.ticker + " BUY submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            console.warn("[orchestrator] " + signal.ticker + " BUY " + (rejected ? "was REJECTED by the exchange" : "submitted but NOT confirmed in matched orders after 60s") + " — will retry next run.");
             const book = await snapshotOrderBook(page).catch((e) => "order book snapshot failed: " + e.message);
             console.warn("[orchestrator] Order book after unconfirmed " + signal.ticker + ": " + book);
             await logRun(supabase, {
-              runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
-              message: "BUY " + shares + " shares submitted, no matching order found within 60s | " + book,
+              runType: "trade", ticker: signal.ticker, status: rejected ? "failed" : "unconfirmed", price: signal.price,
+              message: rejected
+                ? "BUY " + shares + " shares REJECTED by the exchange (HTTP " + placeResult.createStatus + "): " + String(placeResult.createBody).slice(0, 160) + " | " + book
+                : "BUY " + shares + " shares submitted, no matching order found within 60s | " + book,
             });
-            await recordStatus(supabase, signal, "unconfirmed");
+            await recordStatus(supabase, signal, rejected ? "rejected" : "unconfirmed");
           }
         } else {
           const snapshot = await getAccountSnapshot(page);
@@ -410,9 +415,12 @@ async function run() {
           console.log("[orchestrator] " + signal.ticker + " SELL: " + position.shares + " shares (full position).");
 
           const placeResult = await withSession(page, (p) => placeTrade(p, searchTermFor(signal.stock_name), "SELL", { quantity: position.shares }));
-          const verified = placeResult && placeResult.symbolId
-            ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "SELL", quantity: position.shares, submittedAfter: placeResult.submittedAfter })
-            : { filled: false };
+          const rejected = Boolean(placeResult && placeResult.createStatus >= 400);
+          const verified = rejected
+            ? { filled: false }
+            : placeResult && placeResult.symbolId
+              ? await verifyTradeFilled(page, { symbolId: placeResult.symbolId, side: "SELL", quantity: position.shares, submittedAfter: placeResult.submittedAfter })
+              : { filled: false };
 
           if (verified.filled) {
             console.log("[orchestrator] " + signal.ticker + " SELL CONFIRMED via matched order " + verified.order.ShortOrderId);
@@ -422,14 +430,16 @@ async function run() {
             });
             await recordFill(supabase, signal, "SELL", position.shares, verified.order);
           } else {
-            console.warn("[orchestrator] " + signal.ticker + " SELL submitted but NOT confirmed in matched orders after 60s — will retry next run.");
+            console.warn("[orchestrator] " + signal.ticker + " SELL " + (rejected ? "was REJECTED by the exchange" : "submitted but NOT confirmed in matched orders after 60s") + " — will retry next run.");
             const book = await snapshotOrderBook(page).catch((e) => "order book snapshot failed: " + e.message);
             console.warn("[orchestrator] Order book after unconfirmed " + signal.ticker + ": " + book);
             await logRun(supabase, {
-              runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
-              message: "SELL " + position.shares + " shares submitted, no matching order found within 60s | " + book,
+              runType: "trade", ticker: signal.ticker, status: rejected ? "failed" : "unconfirmed", price: signal.price,
+              message: rejected
+                ? "SELL " + position.shares + " shares REJECTED by the exchange (HTTP " + placeResult.createStatus + "): " + String(placeResult.createBody).slice(0, 160) + " | " + book
+                : "SELL " + position.shares + " shares submitted, no matching order found within 60s | " + book,
             });
-            await recordStatus(supabase, signal, "unconfirmed");
+            await recordStatus(supabase, signal, rejected ? "rejected" : "unconfirmed");
           }
         }
       } catch (err) {

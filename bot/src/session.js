@@ -124,6 +124,32 @@ export async function isLoggedIn(page) {
   return true;
 }
 
+// Added 2026-10-14: the Soko Play token appears to live about an hour. A session restored
+// within minutes of expiry passes the Wallets/balances check and then dies mid-run (the 11:00
+// and 13:00 hourly checks failed for exactly this reason). Treat a stored session with under
+// 15 minutes of token life left as expired and log in fresh.
+export async function sessionNearExpiry(page, minMinutes = 15) {
+  let minutesLeft = null;
+  try {
+    const token = await page.evaluate(() => localStorage.getItem("token"));
+    const part = token && token.split(".")[1];
+    if (part) {
+      const payload = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+      if (payload.exp) minutesLeft = (payload.exp * 1000 - Date.now()) / 60000;
+    }
+  } catch {}
+  if (minutesLeft === null) {
+    try {
+      // No usable exp claim: assume a 60 minute token counted from the last login.
+      minutesLeft = 60 - (Date.now() - fs.statSync(STATE_FILE).mtimeMs) / 60000;
+    } catch {
+      return false;
+    }
+  }
+  console.log("[session] Stored session has about " + Math.round(minutesLeft) + " minute(s) left.");
+  return minutesLeft < minMinutes;
+}
+
 /**
  * Launches a browser + context, restoring a saved session if present,
  * and transparently (re)logs in if the session is missing or expired.
@@ -149,7 +175,7 @@ export async function launchSession({ headless = true } = {}) {
 const cdpSession = await context.newCDPSession(page);
 await cdpSession.send("Network.setCacheDisabled", { cacheDisabled: true });
 
-  const loggedIn = hasStoredState && (await isLoggedIn(page));
+  const loggedIn = hasStoredState && (await isLoggedIn(page)) && !(await sessionNearExpiry(page));
   if (!loggedIn) {
     console.log(
       hasStoredState
