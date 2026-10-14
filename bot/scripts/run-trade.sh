@@ -21,6 +21,15 @@ cd "$BOT_DIR"
 # recent while not eating disk space indefinitely.
 find "$LOG_DIR" -name "trade-*.log" -mtime +30 -delete 2>/dev/null || true
 
+# Added 2026-10-14: never let two trade runs overlap. A duplicate cron entry or a slow run
+# could otherwise place the same order twice before either run logs it. The lock is released
+# when this script exits, even if it is killed.
+exec 9>/tmp/investiq-trade.lock
+if ! flock -n 9; then
+  echo "===== $(date -Iseconds) -- another trade run holds the lock, skipping =====" >> "$LOG_FILE"
+  exit 0
+fi
+
 echo "===== $(date -Iseconds) — starting trade run =====" >> "$LOG_FILE"
 timeout --kill-after=30s 300s npm run trade >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
