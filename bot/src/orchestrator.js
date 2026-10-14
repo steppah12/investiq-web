@@ -261,6 +261,23 @@ async function signalAlreadyTraded(supabase, signal) {
 }
 // --- signal ledger helpers (end) ---
 
+// Added 2026-10-14: money already put to work today by confirmed BUY fills (from the ledger).
+// On a lookup error it returns Infinity so the run fails safe (no new buys).
+async function deployedNotionalToday(supabase, today) {
+  const since = new Date(today + "T00:00:00+03:00").toISOString();
+  const { data, error } = await supabase
+    .from("daily_signals")
+    .select("fill_price, fill_qty")
+    .eq("traded_side", "BUY")
+    .eq("trade_status", "filled")
+    .gte("filled_at", since);
+  if (error) {
+    console.warn("[orchestrator] Could not read today's fills - failing safe (no new buys):", error.message);
+    return Infinity;
+  }
+  return (data || []).reduce((sum, r) => sum + (Number(r.fill_price) || 0) * (Number(r.fill_qty) || 0), 0);
+}
+
 async function run() {
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = assertEnv();
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -336,8 +353,10 @@ async function run() {
     // itself. Capped, adjustable via env so it can be raised later
     // without another code change.
     const MAX_DEPLOYABLE_CASH = Number(process.env.MAX_DEPLOYABLE_CASH ?? 100000);
-    let availableCash = Math.min(cashBalance, MAX_DEPLOYABLE_CASH);
-    console.log("[orchestrator] Deployable cash this run (capped at " + MAX_DEPLOYABLE_CASH + "): " + availableCash);
+    // Added 2026-10-14: the cap is per DAY, so same-day retry runs cannot exceed it in total.
+    const deployedToday = await deployedNotionalToday(supabase, today);
+    let availableCash = Math.max(0, Math.min(cashBalance, MAX_DEPLOYABLE_CASH - deployedToday));
+    console.log("[orchestrator] Deployable cash this run (day cap " + MAX_DEPLOYABLE_CASH + ", already deployed today " + Math.round(deployedToday) + "): " + availableCash);
 
     for (const signal of capped) {
       try {
