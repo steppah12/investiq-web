@@ -211,6 +211,56 @@ async function alreadyTradedToday(supabase, ticker, today) {
   return (result.data || []).length > 0;
 }
 
+// --- signal ledger helpers (start) ---
+function serverTimeIso(s) {
+  const t = Date.parse(String(s).replace(/(\.\d{3})\d*/, "$1") + "+03:00");
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+async function recordFill(supabase, signal, side, quantity, order) {
+  const { error } = await supabase
+    .from("daily_signals")
+    .update({
+      trade_status: "filled",
+      traded_side: side,
+      order_id: order.ShortOrderId,
+      fill_price: Number(order.Price) || null,
+      fill_qty: quantity,
+      filled_at: serverTimeIso(order.OrderDate),
+    })
+    .eq("ticker", signal.ticker)
+    .eq("signal_date", signal.date);
+  if (error) console.warn("[orchestrator] Could not record fill in daily_signals:", error.message);
+}
+
+async function recordStatus(supabase, signal, status) {
+  const { error } = await supabase
+    .from("daily_signals")
+    .update({ trade_status: status })
+    .eq("ticker", signal.ticker)
+    .eq("signal_date", signal.date);
+  if (error) console.warn("[orchestrator] Could not record trade status:", error.message);
+}
+
+async function signalAlreadyTraded(supabase, signal) {
+  const { data, error } = await supabase
+    .from("daily_signals")
+    .select("order_id")
+    .eq("ticker", signal.ticker)
+    .eq("signal_date", signal.date)
+    .maybeSingle();
+  if (error) {
+    if (error.code === "42703") {
+      console.warn("[orchestrator] daily_signals.order_id is missing - run the ledger migration. Reuse guard skipped.");
+      return false;
+    }
+    console.warn("[orchestrator] Could not check signal reuse - failing safe:", error.message);
+    return true;
+  }
+  return Boolean(data && data.order_id);
+}
+// --- signal ledger helpers (end) ---
+
 async function run() {
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = assertEnv();
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -296,6 +346,10 @@ async function run() {
           console.log("[orchestrator] Skipping " + signal.ticker + " " + signal.action + " - already traded today.");
           continue;
         }
+        if (await signalAlreadyTraded(supabase, signal)) {
+          console.log("[orchestrator] Skipping " + signal.ticker + " " + signal.action + " - the signal dated " + signal.date + " was already traded.");
+          continue;
+        }
         if (signal.action === "BUY") {
           const { shares, cost } = sizeTrade(signal, availableCash);
           if (cost < MIN_TRADE_VALUE || shares === 0) {
@@ -322,12 +376,14 @@ async function run() {
               message: "BUY " + shares + " shares, confirmed via order " + verified.order.ShortOrderId + ", signal price " + signal.price,
             });
             availableCash -= cost;
+            await recordFill(supabase, signal, "BUY", shares, verified.order);
           } else {
             console.warn("[orchestrator] " + signal.ticker + " BUY submitted but NOT confirmed in matched orders after 60s — will retry next run.");
             await logRun(supabase, {
               runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
               message: "BUY " + shares + " shares submitted, no matching order found within 60s",
             });
+            await recordStatus(supabase, signal, "unconfirmed");
           }
         } else {
           const snapshot = await getAccountSnapshot(page);
@@ -362,12 +418,14 @@ async function run() {
               runType: "trade", ticker: signal.ticker, status: "success", price: Number(verified.order.Price) || signal.price,
               message: "SELL " + position.shares + " shares, confirmed via order " + verified.order.ShortOrderId + ", signal price " + signal.price,
             });
+            await recordFill(supabase, signal, "SELL", position.shares, verified.order);
           } else {
             console.warn("[orchestrator] " + signal.ticker + " SELL submitted but NOT confirmed in matched orders after 60s — will retry next run.");
             await logRun(supabase, {
               runType: "trade", ticker: signal.ticker, status: "unconfirmed", price: signal.price,
               message: "SELL " + position.shares + " shares submitted, no matching order found within 60s",
             });
+            await recordStatus(supabase, signal, "unconfirmed");
           }
         }
       } catch (err) {
