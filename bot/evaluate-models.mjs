@@ -21,6 +21,7 @@
 //   node evaluate-models.mjs                   # full run (about 5 minutes)
 //   node evaluate-models.mjs --save            # full run and store the verdicts
 //   node evaluate-models.mjs --tickers=SBIC,COOP
+//   node evaluate-models.mjs --horizon=90     # research: judge the 90-day model instead of the live 30-day one
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -109,6 +110,7 @@ export function summarize(samples, { fee = FEE_ROUND_TRIP, slip = SLIPPAGE, step
     strong_buy_mean: mean(strong),
     recent_n_buy: recentBuys.length,
     recent_edge: recentEdge,
+    horizon,
     first_date: samples.length ? samples[0].date : null,
     last_date: lastDate,
     verdict,
@@ -173,8 +175,9 @@ export function evaluateDataset(engine, name, rawRows, opts = {}) {
   const rows = markGaps(data.rows.filter((r) => r.date >= "2013-01-01"));
   const offset = data.rows.length - rows.length; // rows dropped from the front; features stay aligned
   const feats = data.features.slice(offset);
-  const samples = collectSamples(engine, name, rows, feats, opts);
-  return { samples, summary: summarize(samples, { step: opts.stepEval ?? 5 }), rows: rows.length };
+  const horizon = opts.horizon ?? HORIZON;
+  const samples = collectSamples(engine, name, rows, feats, { ...opts, horizon });
+  return { samples, summary: summarize(samples, { step: opts.stepEval ?? 5, horizon }), rows: rows.length };
 }
 
 // ---------------------------------------------------------------- engine build
@@ -211,8 +214,8 @@ export function formatReport(results) {
     );
   }
   lines.push("");
-  lines.push("30-trading-day returns, before fees unless marked net. net-of-fees = BUY mean minus " + (FEE_ROUND_TRIP + SLIPPAGE).toFixed(1) + "% (" + FEE_ROUND_TRIP + "% commission + " + SLIPPAGE + "% slippage).");
-  lines.push("edge = BUY mean minus the any-day mean over the same period; t uses the effective sample size because 30-day windows overlap.");
+  lines.push((results[0]?.summary?.horizon ?? HORIZON) + "-trading-day returns, before fees unless marked net. net-of-fees = BUY mean minus " + (FEE_ROUND_TRIP + SLIPPAGE).toFixed(1) + "% (" + FEE_ROUND_TRIP + "% commission + " + SLIPPAGE + "% slippage).");
+  lines.push("edge = BUY mean minus the any-day mean over the same period; t uses the effective sample size because the windows overlap.");
   return lines.join("\n");
 }
 
@@ -222,7 +225,9 @@ async function main() {
   const fast = argv.includes("--fast");
   const arg = (n) => argv.find((a) => a.startsWith("--" + n + "="))?.split("=")[1];
   const want = (arg("tickers") || Object.keys(STOCKS).join(",")).split(",").map((s) => s.trim().toUpperCase());
-  const opts = fast ? { stepCut: 300, stepEval: 10 } : { stepCut: 150, stepEval: 5 };
+  const horizon = Number(arg("horizon") || HORIZON);
+  if (![30, 60, 90].includes(horizon)) throw new Error("--horizon must be 30, 60 or 90");
+  const opts = { ...(fast ? { stepCut: 300, stepEval: 10 } : { stepCut: 150, stepEval: 5 }), horizon };
 
   await import("dotenv/config");
   const { createClient } = await import("@supabase/supabase-js");
@@ -249,7 +254,7 @@ async function main() {
   if (!save) return console.log("\nDry run only. Re-run with --save to store the verdicts.");
 
   const rows = results.map(({ ticker, name, summary: s }) => ({
-    ticker, stock_name: name, data_through: s.last_date, horizon: HORIZON,
+    ticker, stock_name: name, data_through: s.last_date, horizon,
     fee_round_trip: FEE_ROUND_TRIP, slippage: SLIPPAGE,
     n_predictions: s.n_predictions, n_buy: s.n_buy, n_eff_buy: s.n_eff_buy,
     buy_mean: num(s.buy_mean), all_mean: num(s.all_mean), edge: num(s.edge), edge_t: num(s.edge_t),
