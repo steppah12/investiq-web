@@ -179,5 +179,6 @@ async function main() {
 
 main().catch((err) => {
   console.error("[eod] Fatal error:", err);
-  process.exitCode = 1;
+  // Exit now: an open browser would otherwise keep the process alive until the cron timeout.
+  process.exit(1);
 });
