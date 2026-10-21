@@ -16,3 +16,4 @@ debug-*.mjs
 *.before-*
 .backup-*/
 *.save
+.cache/

@@ -150,6 +150,21 @@ export async function sessionNearExpiry(page, minMinutes = 15) {
   return minutesLeft < minMinutes;
 }
 
+// Added 2026-10-20: one transient login failure (10-19 14:00: "Login did not reach the dashboard",
+// while the next login at 15:35 worked) should not cost a whole run. Retry twice, 20s then 60s
+// apart, before giving up.
+async function loginWithRetry(page, waits = [20000, 60000], login = performLogin) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await login(page);
+    } catch (err) {
+      if (attempt >= waits.length) throw err;
+      console.warn("[session] Login attempt " + (attempt + 1) + " failed (" + String(err.message).split(".")[0] + "). Retrying in " + waits[attempt] / 1000 + "s.");
+      await page.waitForTimeout(waits[attempt]);
+    }
+  }
+}
+
 /**
  * Launches a browser + context, restoring a saved session if present,
  * and transparently (re)logs in if the session is missing or expired.
@@ -182,7 +197,13 @@ await cdpSession.send("Network.setCacheDisabled", { cacheDisabled: true });
         ? "[session] Stored session expired — logging in again."
         : "[session] No stored session — logging in fresh."
     );
-    await performLogin(page);
+    try {
+      await loginWithRetry(page);
+    } catch (err) {
+      // Do not leave Chromium running: it kept the process alive until the cron timeout.
+      await browser.close().catch(() => {});
+      throw err;
+    }
   } else {
     console.log("[session] Restored valid session, no login needed.");
   }

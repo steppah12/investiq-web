@@ -1,0 +1,7 @@
+# Market holidays when the NSE is closed (weekdays only). One YYYY-MM-DD per line.
+2026-10-20
+2026-12-25
+2027-01-01
+2027-03-26
+2027-03-29
+2027-06-01

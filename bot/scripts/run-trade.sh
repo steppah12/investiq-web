@@ -30,6 +30,13 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# Added 2026-10-20: skip market holidays (dates in bot/holidays.txt). Nothing trades on those
+# days, so a run would only add noise rows and needless Soko Play logins.
+if tr -d '\r' 2>/dev/null < "$BOT_DIR/holidays.txt" | grep -qxF "$(date +%Y-%m-%d)"; then
+  echo "===== $(date -Iseconds) -- market holiday, skipping =====" >> "$LOG_FILE"
+  exit 0
+fi
+
 echo "===== $(date -Iseconds) — starting trade run =====" >> "$LOG_FILE"
 timeout --kill-after=30s 300s npm run trade >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
