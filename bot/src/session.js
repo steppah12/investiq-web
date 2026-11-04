@@ -81,7 +81,9 @@ async function performLogin(page) {
   }
 
   ensureStateDir();
-  await page.context().storageState({ path: STATE_FILE });
+  const tmpState = STATE_FILE + ".tmp-" + process.pid;
+  await page.context().storageState({ path: tmpState });
+  fs.renameSync(tmpState, STATE_FILE); // atomic: readers never see a half-written file
   console.log("[session] Logged in and saved session state.");
 }
 
@@ -165,6 +167,24 @@ async function loginWithRetry(page, waits = [20000, 60000], login = performLogin
   }
 }
 
+// Added 2026-10-26: a saved session file that is empty or cut off (2026-10-25: "Unexpected end of
+// JSON input") made EVERY job fail at startup. Check it first; if it cannot be read, move it aside
+// and log in fresh instead.
+function stateFileIsUsable() {
+  if (!fs.existsSync(STATE_FILE)) return false;
+  try {
+    JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    return true;
+  } catch {
+    const aside = STATE_FILE + ".corrupt-" + Date.now();
+    try {
+      fs.renameSync(STATE_FILE, aside);
+    } catch {}
+    console.warn("[session] Saved session file was unreadable; moved aside as " + path.basename(aside) + " and logging in fresh.");
+    return false;
+  }
+}
+
 /**
  * Launches a browser + context, restoring a saved session if present,
  * and transparently (re)logs in if the session is missing or expired.
@@ -182,7 +202,7 @@ export async function launchSession({ headless = true } = {}) {
   }
   const browser = await chromium.launch(launchOptions);
 
-  const hasStoredState = fs.existsSync(STATE_FILE);
+  const hasStoredState = stateFileIsUsable();
   const context = await browser.newContext(
     hasStoredState ? { storageState: STATE_FILE } : {}
   );
