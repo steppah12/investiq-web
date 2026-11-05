@@ -159,10 +159,11 @@ function makeDb(supabase) {
   };
 }
 
+const fetchRetry = async (u, o) => { try { return await fetch(u, { ...o, signal: AbortSignal.timeout(15000) }); } catch { await new Promise((r) => setTimeout(r, 5000)); return fetch(u, { ...o, signal: AbortSignal.timeout(15000) }); } };
 async function sendWebhook(text, status) {
   const url = process.env.ALERT_WEBHOOK_URL;
   if (!url) return console.log("[health] ALERT (no ALERT_WEBHOOK_URL set, so nothing sent): " + text);
-  const res = await fetch(url, { method: "POST", body: text, headers: { Title: "InvestIQ bot " + status.toUpperCase(), Priority: status === "fail" ? "high" : "default", Tags: status === "ok" ? "white_check_mark" : "warning" } });
+  const res = await fetchRetry(url, { method: "POST", body: text, headers: { Title: "InvestIQ bot " + status.toUpperCase(), Priority: status === "fail" ? "high" : "default", Tags: status === "ok" ? "white_check_mark" : "warning" } });
   console.log("[health] alert sent, HTTP " + res.status);
 }
 
