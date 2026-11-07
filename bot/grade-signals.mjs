@@ -96,6 +96,7 @@ export function gradeSignal(signal, rows, { fee = 0.02 } = {}) {
     net_ret_roundtrip: raw === "BUY" || raw === "SELL" ? grossRaw - 2 * fee : null,
     fwd_ret_3d: forward(3),
     fwd_ret_5d: forward(5),
+    fwd_ret_30d: forward(30),
     entry_slippage: null,
     entry_range_pos: null,
     fill_ret_to_close: null,
