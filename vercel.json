@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/daily-update",
       "schedule": "0 17 * * 1-5"
+    },
+    {
+      "path": "/api/cron/bot-watch",
+      "schedule": "0 4 * * 1-5"
     }
   ]
 }
