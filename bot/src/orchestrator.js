@@ -344,6 +344,7 @@ async function run() {
       return;
     }
 
+capped.sort((a, b) => (b.price ?? 0) - (a.price ?? 0)); // 2026-11-08: dearest share first so the day cap cannot starve it
     const { cashBalance } = await getAccountSnapshot(page);
     console.log("[orchestrator] Real cash balance: " + cashBalance);
 
