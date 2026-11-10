@@ -12,9 +12,9 @@ import { openStockPickerModal, findStockRow } from "./trade.js";
  *
  * @param {import('playwright').Page} page
  * @param {string} tickerOrName
- * @returns {Promise<{ price: number, prevClose: number|null, timestamp: string }>}
+ * @returns {Promise<{ price: number, prevClose: number|null, closePrice: number|null, timestamp: string }>}
  */
-export async function readStockPrice(page, tickerOrName) {
+export async function readStockPrice(page, tickerOrName, { allowNoTrade = false } = {}) {
   await page.goto("https://academy.nse.co.ke/trader/dashboard", { waitUntil: "domcontentloaded" });
 
   const modal = await openStockPickerModal(page);
@@ -61,7 +61,15 @@ export async function readStockPrice(page, tickerOrName) {
     prevClose = await readNumberNear(prevCloseLabel);
   }
 
-  if (!(price > 0)) {
+  // CLOSE PRICE is the last completed session's close both before and after the platform's morning
+  // rollover. PREV CLOSE is not: before the rollover it is the close of the session before that.
+  let closePrice = null;
+  const closeLabel = page.getByText(/^close\s*price$/i).first();
+  if ((await closeLabel.count()) > 0) {
+    closePrice = await readNumberNear(closeLabel);
+  }
+
+  if (!(price > 0) && !allowNoTrade) {
     throw new Error(
       `readStockPrice: LTP read as ${price} for "${tickerOrName}" — likely no trade has happened yet today ` +
         `(this is expected right after market open, but should never be silently accepted as a real close). ` +
@@ -69,5 +77,5 @@ export async function readStockPrice(page, tickerOrName) {
     );
   }
 
-  return { price, prevClose, timestamp: new Date().toISOString() };
+  return { price, prevClose, closePrice, timestamp: new Date().toISOString() };
 }

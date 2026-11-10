@@ -33,17 +33,17 @@ async function main() {
   }
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const yesterday = previousTradingDay();
-  console.log(`[reconcile] Checking ${yesterday}'s close against today's PREV CLOSE for each stock.`);
+  console.log(`[reconcile] Checking ${yesterday}'s close against the platform's CLOSE PRICE (last completed session) for each stock.`);
 
   const { browser, context } = await launchSession({ headless: true });
   try {
     for (const [name, ticker] of Object.entries(TRACKED_STOCKS)) {
       const page = await context.newPage();
       try {
-        const { prevClose } = await readStockPrice(page, searchTermFor(name));
-        if (prevClose == null) {
-          console.warn(`[reconcile] ${ticker}: no PREV CLOSE available, skipping.`);
-          await logRun(supabase, { runType: "reconcile", ticker, status: "failed", message: "No PREV CLOSE available" });
+        const { closePrice: platformClose } = await readStockPrice(page, searchTermFor(name), { allowNoTrade: true });
+        if (platformClose == null) {
+          console.warn(`[reconcile] ${ticker}: no CLOSE PRICE available, skipping.`);
+          await logRun(supabase, { runType: "reconcile", ticker, status: "failed", message: "No CLOSE PRICE available" });
           continue;
         }
 
@@ -59,7 +59,7 @@ async function main() {
         }
 
         const capturedClose = rows[idx].close;
-        const diff = Math.abs(capturedClose - prevClose);
+        const diff = Math.abs(capturedClose - platformClose);
 
         if (diff < 0.001) {
           console.log(`[reconcile] ${ticker}: matches (${capturedClose}), no correction needed.`);
@@ -69,9 +69,9 @@ async function main() {
 
         // CHANGED 2026-09-27: this used to overwrite iq_stock_<name> (the shared training dataset) whenever Soko Play's PREV CLOSE disagreed with what was captured. myStocks is now trusted directly; this just LOGS the mismatch without touching the dataset.
         console.warn(
-          `[reconcile] ${ticker}: mismatch noted (captured ${capturedClose} vs Soko Play PREV CLOSE ${prevClose}) — NOT correcting the training dataset (myStocks owns that now).`
+          `[reconcile] ${ticker}: mismatch noted (captured ${capturedClose} vs Soko Play CLOSE PRICE ${platformClose}) — NOT correcting the training dataset (myStocks owns that now).`
         );
-        await logRun(supabase, { runType: "reconcile", ticker, status: "success", price: prevClose, message: `Mismatch noted only (captured ${capturedClose} vs ${prevClose}) — dataset not touched, myStocks is the source of truth` });
+        await logRun(supabase, { runType: "reconcile", ticker, status: "success", price: platformClose, message: `Mismatch noted only (captured ${capturedClose} vs ${platformClose}) — dataset not touched, myStocks is the source of truth` });
       } catch (err) {
         console.error(`[reconcile] Failed for ${name} (${ticker}):`, err.message);
         await logRun(supabase, { runType: "reconcile", ticker, status: "failed", message: err.message });
