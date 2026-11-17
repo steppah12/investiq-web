@@ -106,13 +106,14 @@ async function logFetch(ticker: string, date: string, status: string, extra: Rec
 
 export async function fetchAndStoreStock(
   stockName: string,
-  ticker: string
+  ticker: string,
+  prefetchedHtml?: string
 ): Promise<{ status: SyncStatus; stockName: string; ticker: string; [k: string]: any }> {
   if (isNairobiWeekend()) {
     return { status: 'weekend_skip', stockName, ticker }
   }
 
-  const quote = await scrapeMyStocksQuote(ticker)
+  const quote = await scrapeMyStocksQuote(ticker, prefetchedHtml)
 
   // Every successful scrape gets archived permanently, regardless of what
   // happens next — this is the "even if something happens we can still

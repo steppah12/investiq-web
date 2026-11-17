@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextRequest, NextResponse } from 'next/server'
 import { TRACKED_STOCKS, fetchAndStoreStock, fetchAndStoreAllTrackedStocks } from '@/lib/nseSync'
-import { runFullRosterCatchupAndRotation } from '@/lib/liveLab/pipeline'
+import { runFullRosterCatchupAndRotation, runLiveLabCatchup } from '@/lib/liveLab/pipeline'
 
 // Same auth as /api/cron/daily-update — this endpoint does real work
 // (outbound scrapes + Supabase writes) and had no auth at all before,
@@ -30,6 +30,13 @@ export async function GET(request: NextRequest) {
     if (runRoster === 'true') {
       const result = await runFullRosterCatchupAndRotation()
       return NextResponse.json({ success: !result.error, ...result })
+    }
+
+    // The bot posts the pages it fetched itself (see POST). Once all are in, this runs the Live Lab
+    // catch-up on its own, without trying to scrape myStocks from Vercel (which answers HTTP 403).
+    if (searchParams.get('catchupOnly') === 'true') {
+      const liveLabResults = await runLiveLabCatchup()
+      return NextResponse.json({ success: true, liveLabResults, timestamp: new Date().toISOString() })
     }
 
     if (nameParam) {
@@ -69,7 +76,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   try {
-    const { name, ticker } = await request.json()
+    const { name, ticker, html } = await request.json()
 
     const stockName = name || Object.entries(TRACKED_STOCKS).find(([, t]) => t === ticker)?.[0]
     const resolvedTicker = ticker || TRACKED_STOCKS[name]
@@ -78,7 +85,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Provide a known stock name or ticker' }, { status: 400 })
     }
 
-    const result = await fetchAndStoreStock(stockName, resolvedTicker)
+    // Optional: a myStocks page fetched by the bot (see bot/src/mystocksIngest.js). Too short means a broken fetch.
+    let prefetchedHtml: string | undefined = undefined
+    if (html !== undefined) {
+      if (typeof html !== 'string' || html.length < 1000) {
+        return NextResponse.json({ error: 'html must be a string of at least 1000 characters' }, { status: 400 })
+      }
+      prefetchedHtml = html
+    }
+
+    const result = await fetchAndStoreStock(stockName, resolvedTicker, prefetchedHtml)
     return NextResponse.json({ success: true, message: `Updated ${stockName}`, result })
   } catch (error) {
     console.error('Manual NSE fetch error:', error)

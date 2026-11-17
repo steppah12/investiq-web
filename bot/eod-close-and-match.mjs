@@ -4,6 +4,7 @@ import { launchSession } from "./src/session.js";
 import { readStockPrice } from "./src/priceReader.js";
 import { searchTermFor } from "./src/stockNameMap.js";
 import { logRun } from "./src/runLog.js";
+import { ingestMyStocksPages } from "./src/mystocksIngest.js";
 
 const TRACKED_STOCKS = {
   "Stanbic Bank": "SBIC",
@@ -160,8 +161,13 @@ async function main() {
   const { VERCEL_APP_URL, CRON_SECRET } = process.env;
   if (VERCEL_APP_URL && CRON_SECRET) {
     try {
-      console.log(`[eod] Triggering ${VERCEL_APP_URL}/api/nse/fetch ...`);
-      const res = await fetch(`${VERCEL_APP_URL}/api/nse/fetch`, {
+      // myStocks answers HTTP 403 to Vercel's servers (since 2026-11-16), so this machine fetches the pages
+      // and hands them to the app. If none could be handed over, fall back to Vercel fetching them itself.
+      const ingested = await ingestMyStocksPages(VERCEL_APP_URL, CRON_SECRET);
+      const triggerUrl =
+        ingested > 0 ? `${VERCEL_APP_URL}/api/nse/fetch?catchupOnly=true` : `${VERCEL_APP_URL}/api/nse/fetch`;
+      console.log(`[eod] Triggering ${triggerUrl} ...`);
+      const res = await fetch(triggerUrl, {
         headers: { Authorization: `Bearer ${CRON_SECRET}` },
       });
       const body = await res.json();

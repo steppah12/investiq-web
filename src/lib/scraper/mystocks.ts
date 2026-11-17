@@ -83,28 +83,34 @@ function extractById(scopedHtml: string, id: string): string | undefined {
   return m ? m[1].trim() : undefined
 }
 
-export async function scrapeMyStocksQuote(ticker: string): Promise<ScrapedQuote> {
-  const url = MYSTOCKS_BASE + encodeURIComponent(ticker)
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      Referer: 'https://live.mystocks.co.ke/',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'same-origin',
-    },
-    cache: 'no-store',
-  })
+export async function scrapeMyStocksQuote(ticker: string, prefetchedHtml?: string): Promise<ScrapedQuote> {
+  let html: string
+  if (prefetchedHtml !== undefined) {
+    // The page was fetched elsewhere (the bot's machine), because myStocks answers HTTP 403 to Vercel's servers.
+    html = prefetchedHtml
+  } else {
+    const url = MYSTOCKS_BASE + encodeURIComponent(ticker)
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Referer: 'https://live.mystocks.co.ke/',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      cache: 'no-store',
+    })
 
-  if (!res.ok) {
-    throw new Error('myStocks fetch failed for ' + ticker + ': HTTP ' + res.status)
+    if (!res.ok) {
+      throw new Error('myStocks fetch failed for ' + ticker + ': HTTP ' + res.status)
+    }
+
+    html = await res.text()
   }
-
-  const html = await res.text()
   const box = extractQuoteBoxHtml(html)
 
   const closeStr = extractById(box, 'rtPrice2')
